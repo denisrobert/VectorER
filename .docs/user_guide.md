@@ -1,0 +1,498 @@
+# User's Guide
+
+This guide explains how to use the framework for **incremental** and **batch**
+entity resolution (ER), from a first end-to-end pipeline through to calibrating
+the model, tuning parameters, and production-serving. It builds on
+[`architecture.md`](architecture.md) and keeps every step runnable against the
+package in this repository.
+
+The running illustration throughout is the canonical use case inherited from
+the original project: **incremental ER of Canadian-style person records** —
+each record has `first_name`, `last_name`, `date_of_birth`, `email` (present
+~70% of the time) and `address` (present ~70%), missing values are `None`, and
+queries arrive one at a time against a pre-built reference index of 50,000
+records.
+
+---
+
+## 0. Setup
+
+```bash
+python -m venv .venv
+.venv\Scripts\activate        # Windows PowerShell
+pip install -e ".[test]"      # core: numpy + faiss-cpu
+pip install -e ".[embedding]" # optional: sentence-transformers
+```
+
+Import surface:
+
+```python
+from vectorer.comparisons import make_comparison, available_comparisons, comparison_set
+from vectorer.scoring import FellegiSunterScorer
+from vectorer.incremental import build_incremental_pipeline, IncrementalPipeline
+from vectorer.batch import build_batch_pipeline, BatchPipeline
+from vectorer.embeddings import SentenceTransformerEmbedding, CharacterHashingEmbedding
+from vectorer.records import RecordSchema, DictParser, JsonLinesParser
+from vectorer.vectorstores import InMemoryVectorDatabase, FlatIndex
+from vectorer import Decision
+```
+
+The framework treats a *record* as any `Mapping[str, Any]`. Dataclasses and
+objects exposing `to_dict()` are coerced automatically
+(`vectorer.records.to_record_dict`).
+
+### Embedders
+
+- `SentenceTransformerEmbedding(model_id, revision, device)` — real transformer
+  embeddings; use `vectorer.pins.EMBEDDING_MODEL_ID` (all-MiniLM-L6-v2) with its
+  pinned `EMBEDDING_MODEL_REVISION` for reproducible runs.
+- `CharacterHashingEmbedding(dimension=384)` — deterministic, dependency-free
+  hashed n-gram embedder. Same dimensionality as MiniLM, instant, no download.
+  Used by the tests, the examples, and the benchmarks; switch to the
+  sentence-transformer embedder when you need semantic blocking.
+
+---
+
+## 1. The comparison set (choose your model)
+
+Both pipelines consume a *declared* comparison set built through
+`make_comparison(name, **params)`; every option in the registry is available
+via `available_comparisons()`.
+
+```python
+from vectorer.comparisons import make_comparison, available_comparisons
+
+print(available_comparisons())   # 19 options, name -> description
+
+comparisons = [
+    make_comparison("jaro_winkler_at_thresholds", col_name="first_name",
+                    score_threshold_or_thresholds=[0.9, 0.8, 0.7]),
+    make_comparison("jaro_winkler_at_thresholds", col_name="last_name",
+                    score_threshold_or_thresholds=[0.9, 0.8, 0.7]),
+    make_comparison("date_of_birth_comparison", col_name="date_of_birth"),
+    make_comparison("email_comparison", col_name="email"),
+    make_comparison("jaro_winkler_at_thresholds", col_name="address",
+                    score_threshold_or_thresholds=[0.85, 0.75, 0.65]),
+]
+```
+
+One comparison object = one attribute = an ordered list of levels
+(`null -> exact -> fuzzy thresholds -> else`). Each non-null level carries an
+`m`/`u` pair (default m/u are assigned at build time; see `architecture.md` §4,
+and §4 of this guide for calibrating them).
+
+Custom comparisons are registered with `register_comparison`; for the built-in
+families that need extra columns, e.g.:
+
+```python
+make_comparison("forename_surname_comparison",
+                forename_col_name="forename", surname_col_name="surname")
+make_comparison("distance_in_km_at_thresholds",
+                lat_col="lat", long_col="long", km_thresholds=[1, 10, 100])
+make_comparison("absolute_date_difference_at_thresholds",
+                col_name="hired", input_is_string=True,
+                metrics=["day", "day", "day"], thresholds=[1, 7, 30])
+```
+
+---
+
+## 2. Incremental ER (one record at a time)
+
+Use incremental ER when records arrive as a stream and each must be checked
+against an existing reference population — the online / API / streaming-insert
+setting of the original project's resolver.
+
+### 2.1 Build the reference store and pipeline
+
+```python
+from vectorer.incremental import build_incremental_pipeline
+from vectorer.pins import EMBEDDING_MODEL_ID, EMBEDDING_MODEL_REVISION
+
+references = load_reference_people()          # list[dict]: 50k Canadian persons
+
+pipeline = build_incremental_pipeline(
+    references,
+    embedder=SentenceTransformerEmbedding(EMBEDDING_MODEL_ID, EMBEDDING_MODEL_REVISION),
+    comparisons=comparisons,                  # from §1
+    k=20,                                     # top-k vector search blocking
+    tau=0.85,                                 # match threshold on the posterior
+)
+```
+
+`build_incremental_pipeline` builds an `InMemoryVectorDatabase` (embedder +
+FAISS flat index over L2-normalized vectors = cosine) over `references`, then a
+`FellegiSunterScorer` from the `comparisons`. If you omit the embedder you get
+the deterministic hashing embedder; if you already have a calibrated scorer,
+pass `scorer=` instead of `comparisons=`.
+
+### 2.2 Resolve a query
+
+```python
+query = {"first_name": "Jon", "last_name": "Smyth",
+         "date_of_birth": "1985-06-15", "email": None, "address": "1 Main St Toronto"}
+
+r = pipeline.resolve(query)
+r.decision                 # Decision.MATCH / Decision.NON_MATCH
+r.matches                  # sorted MatchResult list (posterior desc)
+r.matches[0].match_probability, r.matches[0].match_weight, r.matches[0].blocking_score
+r.retrieved                # all top-k ScoredCandidates (even non-matches)
+r.embedding                # the query's embedding vector
+```
+
+`resolve` runs the whole chain: parse -> embed -> vector search blocking (top-k)
+-> FS scoring of the top-k -> classify. A query is a match if any candidate's
+posterior `>= tau`.
+
+### 2.3 Persisting the reference store
+
+Embedding 50k records is the expensive, one-off step. Persist it so a new
+process resolves without re-embedding:
+
+```python
+from vectorer.vectorstores import InMemoryVectorDatabase, FlatIndex
+from vectorer.scoring import FellegiSunterScorer
+
+# build once...
+db = InMemoryVectorDatabase(embedder, FlatIndex(normalize=True))
+db.add(references)
+db.save("data/person_index")          # writes index.faiss + records.pkl + metadata.json
+
+# ...reload later (embedder is required to deserialize the store)
+db = InMemoryVectorDatabase.load("data/person_index", embedding=embedder)
+pipeline = IncrementalPipeline(
+    vector_database=db,
+    scorer=FellegiSunterScorer.from_comparisons(comparisons, threshold=0.85),
+    k=20, tau=0.85,
+)
+```
+
+### 2.4 (Re)building from a scratch or empty store
+
+The incremental store can bootstrap itself: start with an empty database and
+`add`/`ingest` records as they resolve. Combined with the embedding model:
+
+```python
+db = InMemoryVectorDatabase(embedder, FlatIndex(normalize=True))
+pipeline = IncrementalPipeline(db, scorer, k=20, tau=0.85)
+
+for record in stream:
+    pipeline.ingest(record)          # parse + embed + append; or
+    # pipeline.ingest_novel(record)  # append only if no existing match (see §2.5)
+```
+
+### 2.5 Ingestion modes
+
+- `pipeline.add(records)` — append already-parsed records.
+- `pipeline.ingest(payload)` — parse + embed + append, returns new position.
+- `pipeline.ingest_novel(payload, novelty_threshold=None)` — **novelty-only
+  ingestion**: resolves first, appends only if *no* candidate scores at or
+  above the novelty threshold (`tau` by default). Returns the new position, or
+  `None` for a duplicate — useful for de-duplicated ingest into the index.
+- `pipeline.ingest_novel_many(deck)` — batch version, returns a position list
+  aligned with the input (`None` = skipped duplicate).
+
+### 2.6 Using stage hooks
+
+Every stage is a public method you can override or call directly:
+
+```python
+record = pipeline.parse(payload)          # stage 1
+vector = pipeline.embed(record)           # stage 2 (cached for the next stages)
+cands   = pipeline.block(record, k=20)    # stage 3
+scored  = pipeline.score(record, cands)   # stage 4
+matches = pipeline.classify(record, scored)  # stage 5
+```
+
+Subclass `IncrementalPipeline` and override a stage to customise it (e.g. swap
+the blocker, add a pre-filter, cache features).
+
+---
+
+## 3. Batch ER (whole dataset, deduplicate + cluster)
+
+Use batch ER when you have a complete dataset and want to find all duplicate
+entities at once — the bulk deduplication analogue of the incremental use case.
+The chain is: parse all -> embed all -> canopy blocking on the embedded dataset
+-> FS scoring of every canopy candidate pair -> Swoosh clustering.
+
+### 3.1 Build and run
+
+```python
+from vectorer.batch import build_batch_pipeline, BatchPipeline
+from vectorer.embeddings import SentenceTransformerEmbedding
+
+dataset = load_all_records()                # list[dict], e.g. 10k+ people
+
+pipeline = build_batch_pipeline(
+    embedder=SentenceTransformerEmbedding(EMBEDDING_MODEL_ID, EMBEDDING_MODEL_REVISION),
+    comparisons=comparisons,                # same comparison set as §1
+    n_canopies=256,                         # FAISS k-means canopy count
+    overlap_m=2,                            # top-2 canopy assignment (overlap)
+    canopy_seed=42,
+    tau=0.85,
+)
+result = pipeline.run(dataset)
+```
+
+### 3.2 Reading the result
+
+```python
+result.n_clusters                      # number of distinct entities found
+result.n_singletons                    # entities with exactly one record
+result.n_non_singletons                # entities with >= 2 records (duplicates found)
+result.cluster_of_position(7)          # cluster id of record 7
+result.assignment.clusters             # cluster_id -> Cluster(members, representative)
+result.scored_pairs                    # every scored canopy candidate pair
+result.timing                          # per-stage seconds
+```
+
+`Cluster` exposes `member_positions` (record indices) and a `representative`
+record (the most complete member, by non-null field count).
+
+### 3.3 Saving outputs
+
+```python
+# Persist the Swoosh assignment (cluster_id per record) as JSON
+assign = result.assignment
+json.dump(
+    {pos: cluster_id for pos, cluster_id in assign.node_cluster.items()},
+    open("clusters.json", "w"),
+)
+# Or map to user-facing ids via a schema
+schema = RecordSchema(("first_name", "last_name", "date_of_birth", "email"),
+                      id_column="record_id")
+id_to_cluster = result.cluster_ids_of(schema)   # {"r000": 5, ...}
+```
+
+### 3.4 Tuning candidate generation
+
+- `n_canopies` — more canopies = smaller cells = fewer candidate pairs but
+  higher risk of splitting near-boundary true matches.
+- `overlap_m` — degree of multi-assignment. `1` = hard partition (cheapest);
+  `2–3` is the common sweet spot that recovers most boundary matches.
+- The canopy index is deterministic for a given `canopy_seed`.
+
+**Swoosh re-matching (optional).** By default `run` does the transitive closure
+over above-`tau` pairs (standard *score then cluster*). If you want full
+G-Swoosh behaviour — re-matching merged representatives against the candidate
+pair set — use the pair-driven entry points:
+
+```python
+from vectorer.blocking import canopy_blocking
+from vectorer.clustering import SwooshClusterer
+
+parsed = result.records                            # the record dicts (canopy uses them)
+vectors = pipeline.embed_all(parsed)
+canopy = pipeline.block(vectors)
+pairs = list(canopy.candidate_pairs())
+scored = pipeline.score(parsed, pairs)
+assignment = SwooshClusterer(tau=0.85).cluster_with_merger(
+    parsed, pairs,
+    scorer_match=lambda li, ri: pipeline.scorer.score(parsed[li], parsed[ri]),
+)
+```
+
+---
+
+## 4. Calibrating the Fellegi-Sunter parameters
+
+The default `m/u` values produce reasonable scores out of the box, but for
+production-grade probabilities you should calibrate them — either supervised
+(we have labels) or unsupervised (we have a duplicate-bearing population).
+
+### 4.1 Supervised: calibrate from labelled pairs
+
+Construct a list of records with an `is_match` flag (1 = match, 0 = non-match)
+and, for each compared field, both the left and right values:
+
+```python
+labelled_pairs = [
+    {"is_match": 1,
+     "first_name_l": "john",   "first_name_r": "john",
+     "last_name_l": "smith",   "last_name_r": "smith",
+     "date_of_birth_l": "1985-06-15", "date_of_birth_r": "1985-06-15",
+     "email_l": None, "email_r": None},
+    {"is_match": 0,
+     "first_name_l": "robert", "first_name_r": "anna",
+     "last_name_l": "green",   "last_name_r": "walker",
+     "date_of_birth_l": "1978-02-28", "date_of_birth_r": "1991-07-20",
+     "email_l": None, "email_r": None},
+    # ... at least a few hundred pairs, mixing matches and non-matches
+]
+
+scorer_calibrated = FellegiSunterScorer.from_comparisons(comparisons).calibrate_from_pairs(
+    labelled_pairs, smoothing=0.5,
+)
+# Use it in either pipeline via scorer=scorer_calibrated
+pipeline = build_incremental_pipeline(refs, embedder=embedder,
+                                      scorer=scorer_calibrated, k=20, tau=0.85)
+# Calibrated posteriors are only as good as the labelled sample: with a handful
+# of pairs they stay conservative (~0.3–0.5 for exact matches). Calibrate on a
+# few hundred labelled pairs to get sharp, production-useful probabilities.
+```
+
+### 4.2 Unsupervised: expectation maximisation
+
+Provide a *duplicate-bearing* population (e.g. the batch input, or a sample of
+the reference records with planted duplicates). The estimator generates
+candidate pairs under blocking rules, estimates `u` from uniform random pairs,
+and fits `m` plus the match prior by EM:
+
+```python
+scorer_em = FellegiSunterScorer.from_comparisons(comparisons).fit_em(
+    training_records,                         # duplicate-bearing people
+    training_block_on=[("first_name",), ("date_of_birth",)],
+    recall=0.7,                               # approximate blocking recall
+    seed=42,
+)
+pipeline = build_batch_pipeline(embedder=embedder, scorer=scorer_em,
+                                n_canopies=256, overlap_m=2, tau=0.85)
+```
+
+If you have a population without duplicates, plant them (or use the supervised
+route). EM on a set with zero duplicate pairs raises a clear error.
+
+### 4.3 Persisting the trained model
+
+```python
+scorer_em.save("model.json")                  # comparisons (with m/u) + prior
+scorer = FellegiSunterScorer.load("model.json")
+pipeline = IncrementalPipeline(db, scorer, k=20, tau=0.85)
+```
+
+`to_settings()`/`to_dict()` return the same structure if you prefer to store it
+inline; `save`/`load` wrap them as JSON.
+
+---
+
+## 5. Choosing the match threshold (`tau`)
+
+`tau` is the posterior at which a pair is declared a match. It is the
+*operating point* of the Fellegi-Sunter decision rule:
+
+- **High tau (0.9–0.99)** — high precision, lower recall. Fewer false matches;
+  good when a wrong match is costly (identity linking).
+- **Low tau (0.5–0.7)** — higher recall, more false matches. Good for
+  candidate decks / clerical review, or when recall is the priority.
+
+For binary classification and no labelled data, the natural default is `0.5`
+(the posterior where evidence is neutral). The original project used `0.85`
+for a precision-leaning operating point. For three-band decisions (match /
+possible match / non-match) outside the two-band pipeline, use the classifier
+directly:
+
+```python
+from vectorer.classification import ThresholdClassifier
+
+classifier = ThresholdClassifier(tau=0.9, possible_low=0.5)
+classifier.decide(0.93)   # Decision.MATCH
+classifier.decide(0.60)   # Decision.POSSIBLE_MATCH
+classifier.decide(0.10)   # Decision.NON_MATCH
+```
+
+For principled threshold selection, calibrate the scorer first (posteriors are
+then meaningful probabilities) and, if you have labels, sweep `tau` over
+precision/recall as the previous project's experiments did.
+
+---
+
+## 6. Practical notes from the original project's use case
+
+### 6.1 Data preparation
+
+- Lowercase and normalize values before embedding and comparison (suffixes,
+  abbreviations, whitespace). The original project serializes each person with
+  a stable template (`first_name`, `last_name`, `date_of_birth`, address,
+  email) so identical entities embed near-identically.
+- Missing fields should be `None`, not empty strings: the comparison levels'
+  null handling and the term-frequency logic both rely on `None`.
+- Because names are shared across records (the synthetic population has a
+  small name vocabulary), name fields by themselves are high-frequency: an
+  exact email or a full date-of-birth match adds far more evidence per bit. If
+  a field is very common in your data, enable term-frequency adjustment:
+  `make_comparison("exact_match", col_name="surname", term_frequency_adjustments=True)`
+  with the reference population passed as `base_records=` to the scorer
+  (`FellegiSunterScorer.from_comparisons(comparisons, base_records=refs)`).
+
+### 6.2 Blocking recall
+
+- Incremental top-k: the original project's `k=20` achieved **99.6%** top-k
+  blocking recall on the 50k person index (missing-rate 0.3). Raise `k` to
+  recover more recall, at a linear cost in scoring time.
+- Bulk canopies: overlap `m ≥ 2` recovers near-boundary matches; the 52k-record
+  benchmark deduplicated with recall ≥ 0.97 at `overlap_m=1–2`.
+
+### 6.3 What the numbers look like (sanity anchors)
+
+On the original 50k-reference incremental use case (MiniLM embeddings,
+k=20):
+
+- cold per-query `resolve`: ~33 ms end-to-end with the MiniLM embedder
+  (embedding-dominated; ~4–5 ms with the hashing embedder);
+- exact duplicates match at posterior 1.0; a 2-char-typo `smith→smithq`
+  duplicate still matches at > 0.99 (jaro-winkler + dob + email evidence).
+
+On the bulk 52k use case (hashing embedder): 254 s total, of which ~230 s is
+vectorized FS scoring of 1.7 M canopy pairs (~7.3k pairs/s), precision 1.0 and
+recall 0.97–1.0.
+
+Treat every number as a sanity check, not a promise: your embedding, data
+quality and hardware will move them.
+
+### 6.4 Errors to expect
+
+- `calibrate_from_pairs` requires both 1s and 0s in `is_match`.
+- `fit_em` raises if no blocking-rule candidate pairs are generated — add
+  duplicates or adjust `training_block_on`.
+- `distance_function_at_thresholds` raises for an unknown function name;
+  pass a callable for anything bespoke.
+- Building a comparator over columns absent from your records is only detected
+  at scoring time (the score statuses degrade gracefully to null levels). Pass
+  the `base_records`/schema you actually serialize with.
+
+---
+
+## 7. End-to-end script skeleton
+
+Putting the pieces together for the incremental use case:
+
+```python
+import json
+from vectorer.comparisons import make_comparison
+from vectorer.embeddings import SentenceTransformerEmbedding
+from vectorer.incremental import build_incremental_pipeline
+from vectorer.pins import EMBEDDING_MODEL_ID, EMBEDDING_MODEL_REVISION
+from vectorer.scoring import FellegiSunterScorer
+
+comparisons = [
+    make_comparison("jaro_winkler_at_thresholds", col_name="first_name"),
+    make_comparison("jaro_winkler_at_thresholds", col_name="last_name"),
+    make_comparison("date_of_birth_comparison", col_name="date_of_birth"),
+    make_comparison("email_comparison", col_name="email"),
+]
+
+# 1. Index the reference population once (with term-frequency base, if desired)
+embedder = SentenceTransformerEmbedding(EMBEDDING_MODEL_ID, EMBEDDING_MODEL_REVISION)
+references = json.load(open("reference_people.json"))
+pipeline = build_incremental_pipeline(references, embedder=embedder,
+                                      comparisons=comparisons, k=20, tau=0.85)
+
+# 2. Optionally calibrate (labels) or fit EM on a duplicate-bearing sample
+#    scorer = FellegiSunterScorer.from_comparisons(comparisons)
+#    scorer = scorer.calibrate_from_pairs(labelled_pairs)   # or .fit_em(...)
+#    pipeline.scorer = scorer
+
+# 3. Persist the store + model
+pipeline.vector_database.save("data/person_index")
+pipeline.scorer.save("data/scorer.json")
+
+# 4. Resolve incoming queries
+for raw in incoming:
+    result = pipeline.resolve(json.loads(raw))
+    yield {"decision": result.decision.value,
+           "best_probability": result.matches[0].match_probability if result.matches else None,
+           "best_candidate": result.matches[0].candidate_position if result.matches else None}
+```
+
+For the batch analogue, see §3; the two pipelines share the comparison set,
+scorer and calibration, so a model trained once serves both.

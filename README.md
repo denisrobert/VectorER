@@ -17,8 +17,17 @@ candidate pairs.
 the candidates come from an ANN index or canopy partition rather than a
 database join. Every level here is a NumPy predicate evaluated over the whole
 batch of candidate pairs at once, and the Fellegi-Sunter math (level assignment
--> bayes factors -> posterior) is pure array algebra. See
-[`.docs/architecture.md`](.docs/architecture.md) for the full design.
+-> bayes factors -> posterior) is pure array algebra.
+
+## Documentation
+
+- **[`.docs/architecture.md`](.docs/architecture.md)** — operation modes,
+  pipeline architecture for incremental and bulk ER, blocking/scoring/clustering
+  design, extension points, and design rationale.
+- **[`.docs/user_guide.md`](.docs/user_guide.md)** — hands-on guide covering
+  both pipelines end to end: comparison selection, reference-store persistence,
+  ingestion modes, batch clustering, calibration, threshold choice, and
+  production notes built around the incremental person-resolution use case.
 
 ## Installation
 
@@ -205,6 +214,7 @@ vector-er/
 │   ├── batch.py            # BatchPipeline
 │   └── pins.py             # pinned embedding model id/revision
 ├── .docs/architecture.md   # operation modes, pipeline architecture, design rationale
+├── .docs/user_guide.md     # hands-on usage: incremental + batch ER, calibration
 ├── tests/                  # pytest suite (~75 tests, offline)
 ├── benchmarks/             # incremental + bulk (batch) latency/throughput benchmarks
 ├── examples/               # incremental_er.py, batch_er.py

@@ -13,11 +13,12 @@ the modules that implement each contract.
 `vector-er` is a framework for entity resolution over dense embeddings. Its
 core design principle: **the vector index is the blocking engine, and the
 Fellegi-Sunter scorer is a vectorized NumPy computation rather than a SQL
-pipeline.** The intended workloads fit on a single machine: one process, one
-NUMA node, an in-memory index and in-memory record store. Nothing in the
+pipeline [1][2].** The intended workloads fit on a single machine: one process,
+one NUMA node, an in-memory index and in-memory record store. Nothing in the
 framework assumes a distributed query engine, a SQL planner, or an external
 linkage service — only NumPy for the scoring math and FAISS for approximate
-nearest-neighbour blocking (see [`src/vectorer/sim.py`](../src/vectorer/sim.py),
+nearest-neighbour blocking [11] (see
+[`src/vectorer/sim.py`](../src/vectorer/sim.py),
 [`src/vectorer/comparisons.py`](../src/vectorer/comparisons.py)).
 
 Everything downstream of parsing consumes the same primitive: a *record* is a
@@ -55,14 +56,11 @@ The trade-off is consciously scoped: this makes the framework **single-machine
 by design** (all pair data lives in process memory) and places the burden of
 scaling on better blocking rather than on distributing a SQL plan. That is
 intentional for the current workload target; a distributed/SQL-based engine —
-such as [Splink](https://github.com/moj-analytical-services/splink), whose
+such as [Splink](https://github.com/moj-analytical-services/splink) [19], whose
 candidate generation, comparison-level evaluation and parameter-estimation are
-realized as queries translatable to DuckDB, Spark, SQLite or Athena (see
-[Linacre *et al.*, "Splink: Free software for probabilistic record linkage at
-scale", *International Journal of Population Data Science* 7(3), 2022,
-DOI [10.23889/ijpds.v7i3.1794](https://doi.org/10.23889/ijpds.v7i3.1794)) —
-is a different architecture with different trade-offs, better suited to very
-large or multi-node tabular workloads.
+realized as queries translatable to DuckDB, Spark, SQLite or Athena — is a
+different architecture with different trade-offs, better suited to very large
+or multi-node tabular workloads.
 
 ---
 
@@ -151,15 +149,15 @@ stage chain is:
 
 Characteristics:
 
-- **Blocking is canopy clustering**: the embedded matrix is passed to FAISS
-  k-means; every record is multi-assigned to its top-`m` centroids; a *canopy*
-  is all records assigned to one centroid; candidate pairs are the pairs
-  co-occurring in any canopy. Canopies **overlap** so a true match that falls
-  near a centroid boundary is still blocked together (blocking recall).
+- **Blocking is canopy clustering [12]**: the embedded matrix is passed to
+  FAISS k-means; every record is multi-assigned to its top-`m` centroids; a
+  *canopy* is all records assigned to one centroid; candidate pairs are the
+  pairs co-occurring in any canopy. Canopies **overlap** so a true match that
+  falls near a centroid boundary is still blocked together (blocking recall).
 - **Scoring is two-sided batch**: the scorer evaluates all canopy candidate
   pairs as equal-length left/right sequences in vectorized chunks, producing a
   posterior and match weight per pair (see §4).
-- **Clustering is Swoosh-compatible**: `SwooshClusterer` first takes the
+- **Clustering is Swoosh-compatible [13]**: `SwooshClusterer` first takes the
   transitive closure of above-threshold pairs (the cheap, standard mode), and
   `gswoosh`/`cluster_with_merger` additionally re-match merged representatives
   against the candidate pair set (full G-Swoosh behaviour).
@@ -170,14 +168,15 @@ Characteristics:
 
 Both modes consume a calibrated `FellegiSunterScorer`. Two native estimators
 produce the `m`/`u` (per-comparison-level match/non-match) probabilities and
-the base prior:
+the base prior, following the Fellegi-Sunter estimation literature [1]:
 
 - **Supervised**: `calibrate_from_pairs` from labelled match/non-match pair
   records (Laplace-smoothed level proportions), re-derived through the same
-  level-assignment machinery used at inference.
+  level-assignment machinery used at inference — the calibration-of-false-match
+  rates route of Belin & Rubin [10].
 - **Unsupervised**: `fit_em` — candidate pairs under blocking rules, `u`
   estimated from uniform random pair samples, `m` and the blocked-pair match
-  proportion fit by expectation maximisation, base prior = recall-adjusted
+  proportion fit by expectation maximisation [1][19], base prior = recall-adjusted
   share of blocked matches over all possible pairs.
 
 Trained weights are serialized (`save`/`load`) as resolved comparison dicts;
@@ -208,7 +207,12 @@ Two different geometric blocking strategies implement this invariant:
 Canopy overlap is the bulk analogue of `k`: with overlapped canopies (`m>1`),
 a record appears in several cells and its pairs are evaluated in each cell it
 shares — the framework's answer to the classic canopy "missing pair at the
-boundary" failure.
+boundary" failure [12].
+
+Dense embeddings for the blocking stage follow a well-established line of work:
+distributed tuple representations for ER (DeepER) [15], pre-trained-embedding
+blocking compared head-to-head [16], universal dense blocking (UniBlocker) [17],
+and deep-learning blocking against exact-match blocking [18].
 
 `blocking.py` defines the shared data contract: `BlockedCandidate(record,
 score, position)` for vector blocking and `CanopyIndex.assignments/canopies/
@@ -255,38 +259,40 @@ Key properties:
 
 - **Batch vectorization over the pair set**: every predicate is evaluated over
   all pairs at once (per-comparison score arrays cached and shared across
-  threshold levels, so `[0.9, 0.7]` costs one Jaro-Winkler pass).
+  threshold levels, so `[0.9, 0.7]` costs one Jaro-Winkler pass [6][7]).
 - **Small-batch scalar fast path** in `sim.py`: for ≤64 non-trivial pairs the
   Jaro/JW/edit-distance primitives use scalar loops, which beat per-cell NumPy
   at tiny batch sizes (k≈20). The vectorized path is retained for the large
   canopy pair sets.
 - **Level semantics**: levels are ordered by decreasing agreement with a
-  leading null level; each non-null level carries its own `m` and `u`. When a
-  level is not given explicit probabilities, defaults are assigned at build
-  time from a standard scheme: the exact-match level holds a 0.95 match
-  probability, intermediate levels split the remainder, and the u-probabilities
-  correspond to match weights that step from strongly non-matching (± −5) to
-  the exact-match weight (+10). This scheme gives well-behaved scores out of
-  the box (e.g. a single exact email match under a 1e-4 prior yields posterior
-  0.0929) and is what the training sub-mode replaces with data-driven m/u.
+  leading null level; each non-null level carries its own `m` and `u` [1].
+  When a level is not given explicit probabilities, defaults are assigned at
+  build time from a standard scheme mirroring the classic match-weight
+  construction [3]: the exact-match level holds a 0.95 match probability,
+  intermediate levels split the remainder, and the u-probabilities correspond
+  to match weights that step from strongly non-matching (−5) to the exact-match
+  weight (+10). This scheme gives well-behaved scores out of the box (e.g. a
+  single exact email match under a 1e-4 prior yields posterior 0.0929) and is
+  what the training sub-mode replaces with data-driven m/u.
 - **Weighted score = single evaluation**: `score_and_weight_batch` returns
   posterior and match weight from one model evaluation.
 
 `WeightTable` = compiled specs + per-spec log bayes factors + term-frequency
 tables (value -> relative frequency, built from an optional reference
-population). Base priors default to `1e-4`; the classifier default threshold is
-`0.85`.
+population), implementing frequency-based matching [4]. Base priors default to
+`1e-4`; the classifier default threshold is `0.85` (operating-score cut-off,
+cf. FS decision rules [3][5]).
 
 ### 4.1 Comparison registry (`comparisons.py`)
 
 The *function set* is extensible and covers 19 options spanning the standard
-attribute-comparison families used in record linkage:
+attribute-comparison families used in record linkage [14]:
 
-- `exact_match` (with optional term-frequency adjustment)
+- `exact_match` (with optional term-frequency adjustment [4])
 - Jaro-Winkler / Jaro similarities at thresholds (`jaro_winkler_at_thresholds`,
-  `jaro_at_thresholds`)
+  `jaro_at_thresholds`) [6][7]
 - edit distances at thresholds (`levenshtein_at_thresholds`,
-  `damerau_levenshtein_at_thresholds`)
+  `damerau_levenshtein_at_thresholds`) [8][9]
 - set/list similarities (`jaccard_at_thresholds`,
   `cosine_similarity_at_thresholds`, `array_intersect_at_sizes`,
   `pairwise_string_distance_function_at_thresholds`)
@@ -307,19 +313,21 @@ same machinery the built-ins use.
 
 ## 5. Clustering architecture (`clustering.py`)
 
-Swoosh operates on scored pairs (bulk mode output). Design:
+Swoosh [13] operates on scored pairs (bulk mode output). Design:
 
 - **Pair-driven fit with the FS scorer**: `ScoredPair(left_position,
   right_position, probability, match_weight)` is the unit, so the expensive
   scoring happened once in §4's batch pass.
 - **Transitive closure mode** (`SwooshClusterer.cluster`): union the
-  above-`tau` pairs. Cheap; the standard "score then cluster" workflow. Cluster
+  above-`tau` pairs. Cheap; the standard "score then cluster" workflow (a
+  connected-component-style reduction of the scored graph [14]). Cluster
   ids are deterministic (minimum position); representatives are the most
   *complete* records (most non-null fields).
 - **G-Swoosh mode** (`gswoosh`, `cluster_with_merger`): when a merge changes a
   cluster's representative, later pairs are re-tested against the *new*
   representative (with caching of unchanged representative pairs). This is the
-  Swoosh loop the name claims: match tests retried until a pass merges nothing.
+  G-Swoosh loop formalized in the Swoosh family of algorithms [13]: match
+  tests retried until a pass merges nothing.
 
 `ClusterAssignment` is the portable result: `node_cluster` (pos -> cluster id),
 `clusters` (id -> `Cluster` with members, representative), and counters
@@ -379,3 +387,78 @@ current native stack (single machine, 384-d embeds by default):
 These figures are a property of the architecture (vectorized pair evaluation,
 shared score arrays, scalar fast paths) and of the block: embedding dominates
 in both modes when a real transformer model is used.
+
+---
+
+## 9. References
+
+1. Fellegi, I. P., & Sunter, A. B. (1969). *A Theory for Record Linkage.*
+   Journal of the American Statistical Association, 64(328), 1183–1210.
+   [DOI 10.1080/01621459.1969.10501049](https://doi.org/10.1080/01621459.1969.10501049)
+2. Winkler, W. E. (2006). *Overview of Record Linkage and Current Research
+   Directions.* Statistical Research Division, U.S. Bureau of the Census,
+   Research Report Series RRS2006/02.
+   [Link](https://www.census.gov/library/working-papers/2006/adrm/rrs2006-02.html)
+3. Winkler, W. E. (1993). *Improved Decision Rules in the Fellegi–Sunter Model
+   of Record Linkage.* Proceedings of the Section on Survey Research Methods,
+   American Statistical Association, 274–279.
+4. Winkler, W. E. (2000). *Frequency-Based Matching in the Fellegi–Sunter Model
+   of Record Linkage.* Statistical Research Division, U.S. Bureau of the
+   Census, Research Report Series RR2000/06.
+   [Link](https://www.census.gov/library/working-papers/2000/adrm/rr2000-06.html)
+5. Sadinle, M., & Fienberg, S. E. (2013). *A Generalized Fellegi–Sunter
+   Framework for Multiple Record Linkage with Application to Homicide Record
+   Systems.* Journal of the American Statistical Association, 108(502), 651–660.
+   [arXiv:1205.3217](https://arxiv.org/abs/1205.3217)
+6. Jaro, M. A. (1989). *Advances in Record-Linkage Methodology as Applied to
+   Matching the 1985 Census of Tampa, Florida.* Journal of the American
+   Statistical Association, 84(406), 414–420.
+   [DOI 10.1080/01621459.1989.10478785](https://doi.org/10.1080/01621459.1989.10478785)
+7. Winkler, W. E. (1990). *String Comparator Metrics and Enhanced Decision
+   Rules in the Fellegi–Sunter Model of Record Linkage.* Proceedings of the
+   Section on Survey Research Methods, American Statistical Association, 354–359.
+8. Levenshtein, V. I. (1966). *Binary Codes Capable of Correcting Deletions,
+   Insertions, and Reversals.* Soviet Physics Doklady, 10(8), 707–710.
+9. Damerau, F. J. (1964). *A Technique for Computer Detection and Correction
+   of Spelling Errors.* Communications of the ACM, 7(3), 171–176.
+   [DOI 10.1145/363958.363994](https://doi.org/10.1145/363958.363994)
+10. Belin, T. R., & Rubin, D. B. (1995). *A Method for Calibrating False-Match
+    Rates in Record Linkage.* Journal of the American Statistical Association,
+    90(430), 694–707.
+    [DOI 10.1080/01621459.1995.10476563](https://doi.org/10.1080/01621459.1995.10476563)
+11. Johnson, J., Douze, M., & Jégou, H. (2021). *Billion-Scale Similarity Search
+    with GPUs.* IEEE Transactions on Big Data, 7(3), 535–547.
+    [DOI 10.1109/TBDATA.2019.2921572](https://doi.org/10.1109/TBDATA.2019.2921572)
+    · Preprint: [arXiv:1702.08734](https://arxiv.org/abs/1702.08734)
+12. McCallum, A., Nigam, K., & Ungar, L. H. (2000). *Efficient Clustering of
+    High-Dimensional Data Sets with Application to Reference Matching.*
+    In Proceedings of the Sixth ACM SIGKDD International Conference on
+    Knowledge Discovery and Data Mining (KDD), 169–178.
+    [DOI 10.1145/347090.347123](https://doi.org/10.1145/347090.347123)
+13. Benjelloun, O., Garcia-Molina, H., Menestrina, D., Su, Q., Whang, S. E., &
+    Widom, J. (2009). *Swoosh: A Generic Approach to Entity Resolution.*
+    The VLDB Journal, 18(1), 255–276.
+    [DOI 10.1007/s00778-008-0098-x](https://doi.org/10.1007/s00778-008-0098-x)
+14. Christen, P. (2012). *Data Matching: Concepts and Techniques for Record
+    Linkage, Entity Resolution, and Duplicate Detection.* Springer,
+    Data-Centric Systems and Applications.
+    [DOI 10.1007/978-3-642-31164-2](https://doi.org/10.1007/978-3-642-31164-2)
+15. Ebraheem, M., Thirumuruganathan, S., Joty, S., Ouzzani, M., & Tang, N.
+    (2018). *Distributed Representations of Tuples for Entity Resolution
+    (DeepER).* Proceedings of the VLDB Endowment, 11(11), 1454–1467.
+    [DOI 10.14778/3236187.3236198](https://doi.org/10.14778/3236187.3236198)
+16. Zeakis, A., Papadakis, G., Skoutas, D., & Koubarakis, M. (2023).
+    *Pre-Trained Embeddings for Entity Resolution: An Experimental Analysis.*
+    Proceedings of the VLDB Endowment, 16(11), 3239–3251.
+    [DOI 10.14778/3598581.3598594](https://doi.org/10.14778/3598581.3598594)
+17. Wang, T., Lin, H., Han, X., Chen, X., Cao, B., & Sun, L. (2024). *Towards
+    Universal Dense Blocking for Entity Resolution (UniBlocker).* arXiv preprint
+    2404.14831. [arXiv:2404.14831](https://arxiv.org/abs/2404.14831)
+18. Thirumuruganathan, S., Li, H., Tang, N., Ouzzani, M., Govind, Y., Paulsen,
+    D., Fung, G., & Doan, A. (2021). *Deep Learning for Blocking in Entity
+    Matching.* Proceedings of the VLDB Endowment, 14(11), 2459–2472.
+    [DOI 10.14778/3476249.3476294](https://doi.org/10.14778/3476249.3476294)
+19. Linacre, R., Lindsay, S., Manassis, T., Slade, Z., Hepworth, T., Kennedy,
+    R., & Bond, A. (2022). *Splink: Free Software for Probabilistic Record
+    Linkage at Scale.* International Journal of Population Data Science, 7(3).
+    [DOI 10.23889/ijpds.v7i3.1794](https://doi.org/10.23889/ijpds.v7i3.1794)
