@@ -1,0 +1,208 @@
+"""Incremental entity-resolution pipeline.
+
+Stage chain (per incoming record)::
+
+    parse -> embed -> vector search blocking (top-k) -> Fellegi-Sunter
+    scoring on the top-k candidates -> classify
+
+The pipeline resolves *one* streaming record at a time against an existing
+:class:`~vectorer.vectorstores.VectorDatabase` reference population and can
+optionally ingest the accepted record back into the store (growing the index).
+
+Every stage is a public method so subclasses can override a single step (e.g. a
+custom parser or a tuned blocker): :meth:`parse`, :meth:`block`,
+:meth:`score`, :meth:`classify`, :meth:`embed`.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any, Optional, Sequence
+
+from .blocking import BlockedCandidate, VectorBlocker
+from .classification import (
+    Decision,
+    MatchResult,
+    ScoredCandidate,
+    ThresholdClassifier,
+)
+from .embeddings import EmbeddingModel
+from .records import to_record_dict
+from .scoring import DEFAULT_THRESHOLD, FellegiSunterScorer
+from .vectorstores import VectorDatabase
+
+
+@dataclass
+class Resolution:
+    """Result of resolving one input record against the reference population."""
+
+    input_record: dict
+    retrieved: list[ScoredCandidate]
+    matches: list[MatchResult]
+    decision: Decision
+    embedding: Optional[list[float]] = None
+
+
+@dataclass
+class IncrementalPipeline:
+    """Incremental (streaming/online) entity resolution.
+
+    Parameters
+    ----------
+    vector_database:
+        Reference store (embedding model + index + record payloads).
+    scorer:
+        Calibrated Fellegi-Sunter scorer over the comparison set.
+    k:
+        Number of candidates retrieved by vector search blocking.
+    tau:
+        Match threshold on the FS posterior.
+    possible_low:
+        Optional lower threshold for a "possible match" band.
+    """
+
+    vector_database: VectorDatabase
+    scorer: FellegiSunterScorer
+    k: int = 20
+    tau: Optional[float] = None
+
+    def __post_init__(self) -> None:
+        self.blocker = VectorBlocker(self.vector_database, k=self.k)
+        tau = self.tau if self.tau is not None else self.scorer.threshold
+        self.classifier = ThresholdClassifier(tau=tau)
+        self._embed_cache: Optional[list[float]] = None
+
+    # -- stage hooks --------------------------------------------------------
+
+    def parse(self, payload: Any) -> dict:
+        """Stage 1: coerce the inbound payload into a record mapping."""
+        return to_record_dict(payload)
+
+    def embed(self, record: dict) -> Optional[list[float]]:
+        """Stage 2: embed the parsed record (result cached on the resolution)."""
+        text = self._embed_text(record)
+        vector = self.vector_database.embedding.embed(text)
+        self._embed_cache = [float(x) for x in vector]
+        return self._embed_cache
+
+    def block(
+        self,
+        record: dict,
+        k: Optional[int] = None,
+    ) -> list[BlockedCandidate]:
+        """Stage 3: vector-search blocking (top-k candidates)."""
+        return self.blocker.block(record, k=k)
+
+    def score(
+        self,
+        record: dict,
+        candidates: Sequence[BlockedCandidate],
+    ) -> list[ScoredCandidate]:
+        """Stage 4: Fellegi-Sunter scoring of every candidate (single evaluation)."""
+        candidate_records = [
+            to_record_dict(candidate.record) for candidate in candidates
+        ]
+        if not candidate_records:
+            return []
+        posteriors, weights = self.scorer.score_and_weight_batch(record, candidate_records)
+        return [
+            ScoredCandidate(
+                record=candidate.record,
+                probability=float(p),
+                match_weight=float(w),
+                blocking_score=candidate.score,
+                position=candidate.position,
+            )
+            for candidate, p, w in zip(candidates, posteriors, weights)
+        ]
+
+    def classify(
+        self,
+        record: dict,
+        scored: Sequence[ScoredCandidate],
+    ) -> list[MatchResult]:
+        """Stage 5: classification (matches at/above the threshold)."""
+        matches: list[MatchResult] = []
+        for candidate in scored:
+            if self.classifier.decide(candidate.probability) is Decision.MATCH:
+                matches.append(
+                    MatchResult(
+                        record=candidate.record,
+                        match_probability=candidate.probability,
+                        match_weight=candidate.match_weight,
+                        blocking_score=candidate.blocking_score,
+                        candidate_position=candidate.position,
+                    )
+                )
+        matches.sort(key=lambda m: m.match_probability, reverse=True)
+        return matches
+
+    # -- main entry point ---------------------------------------------------
+
+    def resolve(self, payload: Any, k: Optional[int] = None) -> Resolution:
+        """Resolve one record: parse -> embed -> block -> score -> classify."""
+        record = self.parse(payload)
+        vector = self.embed(record)
+        candidates = self.blocker.block(record, k=k, query_vector=self._embed_cache)
+        scored = self.score(record, candidates)
+        matches = self.classify(record, scored)
+        decision = Decision.MATCH if matches else Decision.NON_MATCH
+        return Resolution(
+            input_record=record,
+            retrieved=scored,
+            matches=matches,
+            decision=decision,
+            embedding=vector,
+        )
+
+    # -- ingestion ----------------------------------------------------------
+
+    def add(self, records: Sequence[Any]) -> None:
+        """Ingest parsed records into the reference store (vector DB)."""
+        self.vector_database.add(records)
+
+    def ingest(self, payload: Any) -> int:
+        """Parse, embed and append one record; return its new position."""
+        record = self.parse(payload)
+        self.vector_database.add([record])
+        return len(self.vector_database) - 1
+
+    # -- helpers ------------------------------------------------------------
+
+    @staticmethod
+    def _embed_text(record: dict) -> str:
+        return "\n".join(f"{k}: {v}" for k, v in record.items() if v is not None)
+
+
+def build_incremental_pipeline(
+    records: Sequence[Any],
+    *,
+    embedder: Optional[EmbeddingModel] = None,
+    scorer: Optional[FellegiSunterScorer] = None,
+    comparisons: Optional[Sequence[Any]] = None,
+    k: int = 20,
+    tau: float = DEFAULT_THRESHOLD,
+) -> IncrementalPipeline:
+    """Convenience constructor from a reference population.
+
+    Builds an :class:`InMemoryVectorDatabase` over ``records`` (using a
+    deterministic hashing embedder when none is supplied), then a scorer from
+    the supplied ``comparisons`` (declared ``Comparison`` objects) if no
+    calibrated ``scorer`` is given.
+    """
+    from .embeddings import CharacterHashingEmbedding
+    from .vectorstores import FlatIndex, InMemoryVectorDatabase
+
+    embedding = embedder or CharacterHashingEmbedding()
+    database = InMemoryVectorDatabase(embedding, FlatIndex(normalize=True))
+    database.add(records)
+    if scorer is None:
+        if not comparisons:
+            raise ValueError("supply comparisons or a calibrated scorer")
+        scorer = FellegiSunterScorer.from_comparisons(comparisons, threshold=tau)
+    return IncrementalPipeline(
+        vector_database=database,
+        scorer=scorer,
+        k=k,
+        tau=tau,
+    )

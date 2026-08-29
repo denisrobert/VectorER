@@ -1,0 +1,58 @@
+{
+  "parameters": {
+    "total_records": 10400,
+    "duplicate_pairs_planted": 400,
+    "n_canopies": 256,
+    "overlap": 2,
+    "tau": 0.85,
+    "missing_rate": 0.3,
+    "seed": 42,
+    "embedder": "hashing"
+  },
+  "quality": {
+    "total_records": 10400,
+    "duplicate_pairs_planted": 400,
+    "tp": 400,
+    "fp": 0,
+    "fn": 0,
+    "precision": 1.0,
+    "recall": 1.0,
+    "merge_rate": 0.6281,
+    "n_clusters": 5443,
+    "n_non_singletons": 1575,
+    "largest_cluster": 29,
+    "n_candidate_pairs": 1141570,
+    "timing_seconds": {
+      "parse": 0.0054,
+      "embed": 1.6672,
+      "canopy": 0.8493,
+      "fellegi_sunter": 152.2166,
+      "swoosh": 0.0476
+    },
+    "total_seconds": 154.7862,
+    "records_per_second": 67.2,
+    "candidate_pairs_per_second": 7499.6,
+    "fellegi_sunter_seconds_per_million_pairs": 133.34,
+    "seed": 42,
+    "wall_seconds": 155.2773
+  },
+  "environment": {
+    "python": "3.13.1",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "cpu": "Intel64 Family 6 Model 140 Stepping 1, GenuineIntel",
+    "threads": 8,
+    "libs": {
+      "numpy": "2.5.2",
+      "faiss": "1.15.0",
+      "sentence_transformers": "6.0.0"
+    }
+  },
+  "comparison": {
+    "reference_artifact": "C:\\src\\experiments\\entity\\results\\erwhitepaper\\section7_results.json",
+    "original_fellegi_sunter_seconds": 1321.6,
+    "original_scored_pairs": 800260,
+    "original_pairs_per_second": 605.5,
+    "new_pairs_per_second": 7499.6,
+    "scoring_throughput_speedup": 12.39
+  }
+}

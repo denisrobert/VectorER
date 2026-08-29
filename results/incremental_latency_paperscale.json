@@ -1,0 +1,48 @@
+{
+  "parameters": {
+    "reference_records": 50000,
+    "index_dir": null,
+    "query_count": 30,
+    "match_threshold": 0.85,
+    "blocking_k": 20,
+    "missing_rate": 0.3,
+    "seed": 42,
+    "close_variation_rate": 0.15,
+    "embedder": "hashing"
+  },
+  "index": {
+    "index_build_seconds": 8.725712399929762
+  },
+  "latency": {
+    "count": 30,
+    "mean_ms": 19.350026656563085,
+    "median_ms": 17.081999918445945,
+    "p50_ms": 17.081999918445945,
+    "p75_ms": 26.162599911913276,
+    "p90_ms": 28.081400087103248,
+    "p95_ms": 28.81900011561811,
+    "p99_ms": 28.843999840319157,
+    "min_ms": 6.052499869838357,
+    "max_ms": 28.843999840319157,
+    "stdev_ms": 7.207583894736735,
+    "scope": "cold per-query end-to-end IncrementalPipeline.resolve: embedding + FAISS top-k blocking + native vectorized Fellegi-Sunter scoring (no SQL engine)",
+    "embedding_mean_ms": 0.2820666879415512,
+    "blocking_mean_ms": 2.3600066856791577,
+    "scorer_mean_ms": 17.44352333092441,
+    "breakdown_scope": "independently timed: embedding, block (embed + FAISS search), scorer.score_batch (vectorized Fellegi-Sunter scoring)"
+  },
+  "quality": {
+    "top_k_blocking_recall": 1.0,
+    "match_rate_at_tau": 1.0
+  },
+  "environment": {
+    "python": "3.13.1",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "cpu": "Intel64 Family 6 Model 140 Stepping 1, GenuineIntel",
+    "threads": 8,
+    "libs": {
+      "numpy": "2.5.2",
+      "faiss": "1.15.0"
+    }
+  }
+}

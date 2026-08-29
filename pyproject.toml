@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vectorer"
+version = "0.1.0"
+description = "Framework for embedding-and-vector-based entity resolution: incremental (parse -> embed -> vector-block -> Fellegi-Sunter -> classify) and batch (canopy-block -> Fellegi-Sunter -> Swoosh) pipelines with an extensible comparison set covering every Splink comparison option -- implemented natively in NumPy with no SQL engine."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+dependencies = [
+    # Native comparison semantics replicate the Splink comparison family
+    # (jaro-winkler, levenshtein, date-difference, ...), so the only hard
+    # dependencies are NumPy for vectorized scoring and FAISS for vector ANN.
+    "numpy>=1.24",
+    "faiss-cpu>=1.7",
+]
+
+[project.optional-dependencies]
+embedding = [
+    "sentence-transformers>=3.0",
+    "huggingface-hub>=0.23",
+]
+test = [
+    "pytest>=8.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["vectorer*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

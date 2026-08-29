@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Virtual envs
+.venv/
+venv/
+
+# Tooling / IDE
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.kilo/
+
+# Artifacts produced by examples / demos
+examples/data/
+examples/output/
+*.faiss
+*.jsonl
