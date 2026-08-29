@@ -8,6 +8,9 @@ Stage chain (per incoming record)::
 The pipeline resolves *one* streaming record at a time against an existing
 :class:`~vectorer.vectorstores.VectorDatabase` reference population and can
 optionally ingest the accepted record back into the store (growing the index).
+Ingestion supports a *novelty-only* switch (:meth:`ingest_novel`,
+:meth:`ingest_novel_many`) so only records with no match in the reference
+population are added.
 
 Every stage is a public method so subclasses can override a single step (e.g. a
 custom parser or a tuned blocker): :meth:`parse`, :meth:`block`,
@@ -166,6 +169,55 @@ class IncrementalPipeline:
         record = self.parse(payload)
         self.vector_database.add([record])
         return len(self.vector_database) - 1
+
+    def ingest_novel(
+        self,
+        payload: Any,
+        k: Optional[int] = None,
+        novelty_threshold: Optional[float] = None,
+    ) -> Optional[int]:
+        """Ingest ``payload`` only if it is *novel*: no reference record scores
+        at or above the (novelty) threshold.
+
+        The record is resolved against the reference store first.  When the
+        best candidate posterior is strictly below the threshold (``tau`` by
+        default, or ``novelty_threshold`` when given) the record is treated as
+        new, appended to the store, and its new position is returned.  When a
+        match exists, ``None`` is returned and nothing is ingested.
+
+        This is the "ingest novel records only" switch for the incremental
+        path: exact and near-duplicates of the reference population are
+        skipped, so the store grows only with genuinely new entities.
+        """
+        resolution = self.resolve(payload, k=k)
+        threshold = (
+            novelty_threshold
+            if novelty_threshold is not None
+            else self.classifier.tau
+        )
+        if resolution.retrieved and max(
+            candidate.probability for candidate in resolution.retrieved
+        ) >= threshold:
+            return None
+        self.vector_database.add([resolution.input_record])
+        return len(self.vector_database) - 1
+
+    def ingest_novel_many(
+        self,
+        payloads: Sequence[Any],
+        k: Optional[int] = None,
+        novelty_threshold: Optional[float] = None,
+    ) -> list[Optional[int]]:
+        """Apply :meth:`ingest_novel` to each payload.
+
+        Returns one position per payload: the new store position when the
+        record was novel and ingested, ``None`` when it matched an existing
+        record.  Positions are aligned with ``payloads`` in order.
+        """
+        return [
+            self.ingest_novel(payload, k=k, novelty_threshold=novelty_threshold)
+            for payload in payloads
+        ]
 
     # -- helpers ------------------------------------------------------------
 

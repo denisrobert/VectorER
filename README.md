@@ -60,6 +60,21 @@ result.decision            # Decision.MATCH / Decision.NON_MATCH
 result.matches[0].match_probability
 ```
 
+**Novelty-only ingestion.** Ingestion supports a switch that adds a record to
+the reference store *only if it is novel* — i.e. no record in the index scores
+at or above the novelty threshold:
+
+```python
+pipeline.ingest(record)                 # always append (returns new position)
+pipeline.ingest_novel(record)           # append only if novel; None if a match exists
+pipeline.ingest_novel(record, novelty_threshold=0.5)  # custom novelty bar (default = tau)
+positions = pipeline.ingest_novel_many(deck)   # aligned positions; None = skipped duplicate
+```
+
+`ingest_novel` resolves the record against the store first and appends it only
+when the best candidate posterior is strictly below `tau` (or
+`novelty_threshold`), so near-duplicates never bloat the growing index.
+
 `build_incremental_pipeline` defaults to a deterministic, dependency-free
 hashing embedder; pass `embedder=` a `SentenceTransformerEmbedding` (or any
 `EmbeddingModel`) for a real model.

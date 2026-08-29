@@ -57,6 +57,70 @@ def test_ingest_adds_record_to_store(person_duplicate_dataset, base_comparisons)
     assert pipeline.vector_database.record_at(position)["first_name"] == "john"
 
 
+def test_ingest_novel_skips_duplicates_and_adds_novel(person_duplicate_dataset, base_comparisons):
+    base = person_duplicate_dataset[:5]
+    pipeline = build_incremental_pipeline(base, comparisons=base_comparisons, k=10, tau=0.85)
+    n0 = len(pipeline.vector_database)
+
+    # Exact duplicate of reference[0] is resolved to a match -> skipped.
+    assert pipeline.ingest_novel(person_duplicate_dataset[5]) is None
+    assert len(pipeline.vector_database) == n0
+
+    # Genuinely novel record (no match at/above tau) is ingested.
+    novel = {
+        "first_name": "zoe",
+        "last_name": "khan",
+        "date_of_birth": "1999-01-01",
+        "email": "zoe@nowhere.com",
+        "address": None,
+    }
+    position = pipeline.ingest_novel(novel)
+    assert position == n0
+    assert len(pipeline.vector_database) == n0 + 1
+    assert pipeline.vector_database.record_at(position)["first_name"] == "zoe"
+
+
+def test_ingest_novel_many_aligned_positions(person_duplicate_dataset, base_comparisons):
+    base = person_duplicate_dataset[:5]
+    pipeline = build_incremental_pipeline(base, comparisons=base_comparisons, k=10, tau=0.85)
+    deck = [
+        person_duplicate_dataset[5],          # duplicate of base[0] -> skipped
+        {"first_name": "zoe", "last_name": "khan", "date_of_birth": "1999-01-01",
+         "email": "z@nowhere.com", "address": None},   # novel -> ingested
+        {"first_name": "ray", "last_name": "paul", "date_of_birth": "1970-04-04",
+         "email": None, "address": "99 elm st toronto"},  # novel -> ingested
+    ]
+    positions = pipeline.ingest_novel_many(deck)
+    assert positions[0] is None
+    assert positions[1] == 5
+    assert positions[2] == 6
+    assert len(pipeline.vector_database) == 7
+
+
+def test_ingest_novel_respects_novelty_threshold(person_duplicate_dataset, base_comparisons):
+    base = person_duplicate_dataset[:5]
+    pipeline = build_incremental_pipeline(base, comparisons=base_comparisons, k=10, tau=0.85)
+    n0 = len(pipeline.vector_database)
+
+    # Partial match (posterior ~0.77) is below the default match threshold, so
+    # the record counts as novel and is ingested.
+    partial = {
+        "first_name": "john", "last_name": "smith", "date_of_birth": "1999-01-01",
+        "email": None, "address": None,
+    }
+    assert pipeline.ingest_novel(partial) == n0
+    assert len(pipeline.vector_database) == n0 + 1
+
+    # Raising the novelty bar above that posterior treats the record as an
+    # existing entity, so the twin is skipped.
+    twin = {
+        "first_name": "john", "last_name": "smith", "date_of_birth": "1999-02-02",
+        "email": None, "address": None,
+    }
+    assert pipeline.ingest_novel(twin, novelty_threshold=0.9) is None
+    assert len(pipeline.vector_database) == n0 + 1
+
+
 def test_pipeline_stages_are_exposed(person_duplicate_dataset, base_comparisons):
     from vectorer.comparisons import comparison_set
 

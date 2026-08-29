@@ -117,9 +117,16 @@ Characteristics:
 - **Scoring is per-query batch**: all k candidates are scored in *one*
   evaluation pass against the query (see §4), with a precomputed query vector
   reused across stages so nothing is embedded twice.
-- **Ingestion is supported**: `add`/`ingest` append resolved records back into
-  the store, growing the index for future queries (the incremental corpus can
-  bootstrap itself from an empty store).
+- **Ingestion is supported, including novelty-only ingestion**:
+  `add`/`ingest` append resolved records back into the store, growing the index
+  for future queries (the incremental corpus can bootstrap itself from an empty
+  store). For streams that should contain only *new* entities, the
+  novelty-only switch (`ingest_novel`, `ingest_novel_many`) first resolves the
+  record against the store and appends it **only when no reference record
+  scores at or above the novelty threshold** (`tau` by default, or a custom
+  `novelty_threshold`): exact and near-duplicates are skipped, so the index
+  grows only on genuinely novel records rather than re-ingesting the already-known
+  population.
 
 ### 2.2 Bulk mode (`batch.py`)
 
