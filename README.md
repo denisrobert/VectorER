@@ -2,23 +2,23 @@
 
 A framework for **embedding-and-vector-based entity resolution** with two
 composable pipelines and an extensible **Fellegi-Sunter** (FS) comparison set
-covering the same 19 comparison options currently available in
-[Splink](https://moj-analytical-services.github.io/splink/) — implemented
-**natively in NumPy, with no Splink, no DuckDB, and no SQL engine**.
+spanning 19 options across the standard attribute-comparison families of record
+linkage — implemented **natively in NumPy, with no SQL engine and no external
+linkage dependencies**. It targets workloads that fit on a single machine: one
+process, an in-memory index, and vectorized scoring over whole batches of
+candidate pairs.
 
 | Pipeline | Stage chain | Use case |
 |---|---|---|
 | **Incremental** | parsing -> embedding -> vector search blocking (top-k) -> FS scoring on the top-k -> classification | online / streaming resolution of one record against a reference store |
 | **Batch** | parsing -> embedding -> canopy blocking on the embedded dataset -> FS scoring of every canopy pair -> Swoosh clustering | offline deduplication / clustering of a whole dataset |
 
-**Why no SQL?** Splink evaluates comparison levels by lowering them to SQL
-over a DuckDB table. That is awkward when the *blocking engine is a vector
-database*: the candidates are produced by ANN search / canopy clustering, not
-by a SQL join. Here every comparison level is a vectorized NumPy predicate
-evaluated over the whole batch of candidate pairs at once, and the Fellegi-
-Sunter math (level assignment -> bayes factors -> posterior) is pure array
-algebra. The comparison *semantics* mirror Splink's, so a model declared with
-these names behaves like the equivalent Splink model.
+**Why no SQL?** Comparison levels are naturally a vectorized computation when
+the candidates come from an ANN index or canopy partition rather than a
+database join. Every level here is a NumPy predicate evaluated over the whole
+batch of candidate pairs at once, and the Fellegi-Sunter math (level assignment
+-> bayes factors -> posterior) is pure array algebra. See
+[`.docs/architecture.md`](.docs/architecture.md) for the full design.
 
 ## Installation
 
@@ -32,7 +32,8 @@ pip install -e ".[test]"
 pip install -e ".[embedding]"
 ```
 
-There is no `splink`, `duckdb`, or `pandas` dependency anywhere in the package.
+The only runtime dependencies are `numpy` (vectorized scoring) and `faiss-cpu`
+(vector ANN/blocking).
 
 ## Quick start
 
@@ -84,10 +85,10 @@ result.timing                            # per-stage seconds (parse/embed/canopy
 The batch stage chain is exposed as methods (`embed_all`, `block`, `score`,
 `cluster`) so any stage can be replaced.
 
-## The comparison set (the 19 Splink options, native)
+## The comparison set (19 options, native)
 
-`vectorer.comparisons` registers every comparison option of
-`splink.comparison_library` under the canonical name:
+`vectorer.comparisons` registers every comparison option under a canonical
+snake-case name:
 
 `exact_match`, `jaro_winkler_at_thresholds`, `jaro_at_thresholds`,
 `levenshtein_at_thresholds`, `damerau_levenshtein_at_thresholds`,
@@ -111,11 +112,12 @@ c = make_comparison(                          # declared (serializable) comparis
 comparison_set([c])                           # -> [ComparisonSpec], scorer input
 ```
 
-Every built-in name replicates the **level structure and default m/u** of its
-Splink counterpart (verified against Splink by tests): e.g. an exact email
-match under the default prior yields posterior `0.0929`, the `m/u` values come
-from Splink's `0.95`/`weights [-5..3, +10]` scheme, and each comparison is a
-list of ordered levels (`null -> exact -> fuzzy thresholds -> else`).
+Every comparison is a list of ordered levels (`null -> exact -> fuzzy
+thresholds -> else`) with a standard default m/u scheme: the exact-match level
+holds a 0.95 match probability, intermediate levels split the remainder, and
+the u-probabilities correspond to match weights stepping from ~−5 to +10 —
+well-behaved out of the box (e.g. a single exact email match under a 1e-4 prior
+yields posterior 0.0929) and replaceable by training.
 
 The set is **extensible** (and the scorer is fully vectorized: each level's
 predicate runs over the whole candidate batch via NumPy, and multi-threshold
@@ -137,11 +139,10 @@ callables, or as the declarative conditions `"ELSE"`, `'"col_l" IS NULL OR
 
 ## Fellegi-Sunter scoring and calibration
 
-`vectorer.scoring.FellegiSunterScorer` computes the same match-weight algebra
-Splink uses, without SQL: each pair is assigned its highest-priority level per
-comparison, the log-bayes-factor sum is combined with the prior odds, and
-`match_probability = sigmoid(log(prior odds) + sum log(m/u))`. Training is
-equally native:
+`vectorer.scoring.FellegiSunterScorer` assigns each pair its highest-priority
+level per comparison, combines per-level `log(m/u)` with the prior odds, and
+derives `match_probability = sigmoid(log(prior odds) + sum log(m/u))` — all
+vectorized. Training is equally native:
 
 ```python
 from vectorer.scoring import FellegiSunterScorer
@@ -181,17 +182,18 @@ vector-er/
 │   ├── vectorstores.py     # IndexingStrategy, FlatIndex (FAISS), VectorDatabase, in-memory store
 │   ├── blocking.py         # VectorBlocker (top-k) + canopy blocking (k-means multi-assignment)
 │   ├── sim.py              # vectorized similarity/distance primitives (no SQL, no fuzzy deps)
-│   ├── comparisons.py      # extensible comparison registry (19 Splink-compatible options, native)
+│   ├── comparisons.py      # extensible comparison registry (19 options, native)
 │   ├── scoring.py          # WeightTable + FellegiSunterScorer (calibration + EM + inference)
 │   ├── classification.py   # FS decision rule (match / possible / non-match)
 │   ├── clustering.py       # Swoosh (G-Swoosh), cluster assignment helpers
 │   ├── incremental.py      # IncrementalPipeline
 │   ├── batch.py            # BatchPipeline
 │   └── pins.py             # pinned embedding model id/revision
+├── .docs/architecture.md   # operation modes, pipeline architecture, design rationale
 ├── tests/                  # pytest suite (~75 tests, offline)
-└── examples/
-    ├── incremental_er.py   # online resolution + EM training demo
-    └── batch_er.py         # canopy -> FS -> Swoosh deduplication demo
+├── benchmarks/             # incremental + bulk (batch) latency/throughput benchmarks
+├── examples/               # incremental_er.py, batch_er.py
+└── results/                # benchmark result artifacts (gitignored)
 ```
 
 ## Examples
@@ -205,26 +207,40 @@ Both accept `--embedder sentence` to switch from the deterministic hashing
 embedder to `sentence-transformers/all-MiniLM-L6-v2` (revision-pinned; requires
 the `[embedding]` extra).
 
+## Benchmarks
+
+```bash
+python benchmarks/benchmark_incremental_er.py --n-references 50000 --query-count 30 --breakdown
+python benchmarks/benchmark_bulk_er.py --n-records 50000 --dup-rate 0.04 --overlap 1
+```
+
+The incremental benchmark reproduces the original project's cold per-query
+latency methodology (50k reference index, k=20, close-variant queries,
+percentiles + phase breakdown); the bulk benchmark measures whole-dataset
+throughput across canopy -> FS -> Swoosh with duplicate-recovery metrics. See
+`results/*.json`.
+
 ## Tests
 
 ```bash
 python -m pytest
 ```
 
-The suite covers parsing, the comparison registry (every Splink option
-constructible), canonical Jaro-Winkler reference values, vectorized FS scoring
-(including a Splink-default posterior parity check), calibration and native EM,
-vector + canopy blocking, Swoosh clustering, persistence round-trips, and both
-pipelines end to end — all offline with the deterministic hashing embedder.
+The suite covers parsing, the comparison registry (every option constructible),
+canonical Jaro-Winkler reference values, vectorized FS scoring (including a
+default-prior posterior parity check), calibration and native EM, vector +
+canopy blocking, Swoosh clustering, persistence round-trips, and both pipelines
+end to end — all offline with the deterministic hashing embedder.
 
 ## Notes and caveats
 
-* Comparison semantics replicate Splink's recent `splink.comparison_library`
-  level structures and default m/u (verified by tests); they are not an exact
-  upstream contract and will diverge if Splink changes its defaults.
+* The framework is **single-machine by design**: records and pair data live in
+  process memory, and the vector index is the blocking engine. A distributed /
+  SQL-planner based engine is intentionally out of scope for the current
+  workload target.
 * Array-based comparisons (`cosine`, `jaccard`, `array_intersect`,
   `pairwise_string_distance`) operate on list-valued columns natively — no
-  special column typing or DuckDB casts are needed.
+  special column typing or database casts are needed.
 * `custom_comparison` accepts declarative conditions (null/exact/else) or
   user-supplied vectorized test callables; free-form SQL is intentionally not
   supported.
@@ -235,5 +251,4 @@ pipelines end to end — all offline with the deterministic hashing embedder.
 * Scoring is vectorized over the candidate batch (single Jaro-Winkler / edit-
   distance / date-parse pass per comparison, threshold levels read cached
   score arrays), so the incremental path is sub-millisecond per query and the
-  batch path scores tens of thousands of canopy pairs per second in pure
-  Python + NumPy.
+  batch path scores tens of thousands of canopy pairs in pure Python + NumPy.
