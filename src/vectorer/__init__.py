@@ -13,7 +13,7 @@ The Fellegi-Sunter comparison set (:mod:`vectorer.comparisons`) is extensible
 and covers every comparison option currently available in Splink.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 from .records import (
     DictParser,

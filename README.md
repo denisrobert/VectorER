@@ -1,5 +1,8 @@
 # vector-er
 
+[![PyPI version](https://img.shields.io/pypi/v/vectorer.svg)](https://pypi.org/project/vectorer/)
+[![Python versions](https://img.shields.io/pypi/pyversions/vectorer.svg)](https://pypi.org/project/vectorer/)
+
 A framework for **embedding-and-vector-based entity resolution** with two
 composable pipelines and an extensible **Fellegi-Sunter** (FS) comparison set
 spanning 19 options across the standard attribute-comparison families of record
@@ -31,14 +34,23 @@ batch of candidate pairs at once, and the Fellegi-Sunter math (level assignment
 
 ## Installation
 
+`vectorer` is published on PyPI. Install it with `pip` (Python `>= 3.10`):
+
 ```bash
-# Python >= 3.10. Core deps: numpy + faiss-cpu only.
+# Core: vectorized scoring (numpy) + vector ANN/blocking (faiss-cpu).
+pip install vectorer
+
+# Optional: real (sentence-transformers) embedding model
+pip install "vectorer[embedding]"
+```
+
+For development / to run the test suite, install from a source checkout
+(recommended in a virtualenv):
+
+```bash
 python -m venv .venv
 .venv\Scripts\activate        # Windows PowerShell
 pip install -e ".[test]"
-
-# Optional: real (sentence-transformers) embedding model
-pip install -e ".[embedding]"
 ```
 
 The only runtime dependencies are `numpy` (vectorized scoring) and `faiss-cpu`
