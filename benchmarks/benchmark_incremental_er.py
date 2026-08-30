@@ -356,6 +356,14 @@ def main() -> None:
                         help="'sentence' uses sentence-transformers + MiniLM; 'hashing' is deterministic")
     parser.add_argument("--index-dir", default=None,
                         help="persist the reference store here and reload it if present")
+    parser.add_argument("--data-file", default=None,
+                        help="optional real/prepared dataset (JSONL or JSON) to use as the "
+                             "reference population instead of the synthetic generator; "
+                             "expects the compared fields (first_name, last_name, "
+                             "date_of_birth, email, address), None allowed")
+    parser.add_argument("--data-key", default=None,
+                        help="when --data-file is a single JSON object, the key holding "
+                             "the records list")
     parser.add_argument("--breakdown", action="store_true",
                         help="also record embedding / FAISS blocking / scorer phase times")
     parser.add_argument("--compare", default=None,
@@ -376,8 +384,16 @@ def main() -> None:
         # keeping the FAISS blocking stage dimensionally comparable.
         embedder = CharacterHashingEmbedding(dimension=384)
 
-    print(f"Generating {args.n_references:,} reference records (missing-rate {args.missing_rate})...")
-    records = generate_people(args.n_references, missing_rate=args.missing_rate, seed=args.seed)
+    from benchmark_data import load_records, require_compared_fields
+
+    if args.data_file:
+        print(f"Loading reference population from {args.data_file} ...")
+        records = load_records(args.data_file, key=args.data_key)
+        require_compared_fields(records, ["first_name", "last_name", "date_of_birth", "email", "address"])
+        print(f"  {len(records):,} records loaded")
+    else:
+        print(f"Generating {args.n_references:,} reference records (missing-rate {args.missing_rate})...")
+        records = generate_people(args.n_references, missing_rate=args.missing_rate, seed=args.seed)
 
     pipeline, timing = build_pipeline(
         records, embedder, k=args.blocking_k, threshold=args.threshold, index_dir=args.index_dir,
@@ -399,6 +415,8 @@ def main() -> None:
     results = {
         "parameters": {
             "reference_records": len(records),
+            "data_file": args.data_file,
+            "data_key": args.data_key,
             "index_dir": args.index_dir,
             "query_count": len(queries),
             "match_threshold": args.threshold,

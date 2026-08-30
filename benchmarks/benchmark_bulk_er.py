@@ -150,7 +150,10 @@ def cluster_quality(
     timing = result.timing
 
     tp = fp = fn = 0
+    n_rec = len(records)
     for twin_position, base_position in twin_entities.items():
+        if not (0 <= twin_position < n_rec and 0 <= base_position < n_rec):
+            continue  # ground-truth row outside this dataset; skip
         same = (
             result.cluster_of_position(twin_position)
             == result.cluster_of_position(base_position)
@@ -241,18 +244,49 @@ def main() -> None:
     parser.add_argument("--compare", default=None,
                         help="path to original section7_results.json to tabulate scoring "
                              "throughput against")
+    parser.add_argument("--data-file", default=None,
+                        help="optional prepared/real dataset (JSONL or JSON) to use instead "
+                             "of the synthetic generator; expects the compared fields.  "
+                             "Without ground-truth twin labels only throughput/cluster "
+                             "stats are reported (recall defaults to N/A).")
+    parser.add_argument("--data-key", default=None,
+                        help="when --data-file is a single JSON object, the key holding the records list")
+    parser.add_argument("--gt-file", default=None,
+                        help="optional JSON object mapping record index -> true duplicate-"
+                             "twin index, to evaluate recall/precision on a real dataset")
     parser.add_argument("--output", default="results/bulk_latency.json")
     args = parser.parse_args()
 
     # FAISS k-means requires ~39x records >= clusters; clamp the canopy grid.
     n_canopies = min(args.n_canopies, max(1, args.n_records // 39))
 
-    print(f"Generating {args.n_records:,} base records (dup-rate {args.dup_rate}, "
-          f"missing-rate {args.missing_rate}, seed {args.seed})...")
-    records, twin_entities = generate_dataset(
-        args.n_records, args.dup_rate, args.missing_rate, args.seed
-    )
-    print(f"Dataset: {len(records):,} records, {len(twin_entities):,} duplicate twins")
+    if args.data_file:
+        from benchmark_data import load_records, require_compared_fields
+
+        print(f"Loading dataset from {args.data_file} ...")
+        records = load_records(args.data_file, key=args.data_key)
+        require_compared_fields(records, ["first_name", "last_name", "date_of_birth", "email", "address"])
+        twin_entities: dict[int, int] = {}
+        if args.gt_file:
+            import json as _json
+            from pathlib import Path as _Path
+
+            raw_gt = _json.loads(_Path(args.gt_file).read_text(encoding="utf-8"))
+            for k, v in raw_gt.items():
+                try:
+                    twin_entities[int(k)] = int(v)
+                except (TypeError, ValueError):
+                    # keep as-is (positional or custom ids)
+                    twin_entities[k] = v
+        print(f"Dataset: {len(records):,} records, {len(twin_entities):,} ground-truth twin pairs")
+        args = argparse.Namespace(**{**vars(args), "n_records": len(records)})
+    else:
+        print(f"Generating {args.n_records:,} base records (dup-rate {args.dup_rate}, "
+              f"missing-rate {args.missing_rate}, seed {args.seed})...")
+        records, twin_entities = generate_dataset(
+            args.n_records, args.dup_rate, args.missing_rate, args.seed
+        )
+        print(f"Dataset: {len(records):,} records, {len(twin_entities):,} duplicate twins")
 
     embedder = build_embedder(args.embedder)
     scorer = FellegiSunterScorer.from_comparisons(make_comparisons(), threshold=args.tau)
@@ -278,6 +312,9 @@ def main() -> None:
         "parameters": {
             "total_records": len(records),
             "duplicate_pairs_planted": len(twin_entities),
+            "data_file": args.data_file,
+            "data_key": args.data_key,
+            "gt_file": args.gt_file,
             "n_canopies": n_canopies,
             "overlap": args.overlap,
             "tau": args.tau,
