@@ -44,7 +44,8 @@ class EmbeddingModel:
 
 
 class SentenceTransformerEmbedding(EmbeddingModel):
-    """Sentence-transformers embedding with a pinned model revision.
+    """Sentence-transformers embedding — load by identifier, or wrap a model
+    you already instantiated.
 
     Parameters
     ----------
@@ -56,6 +57,17 @@ class SentenceTransformerEmbedding(EmbeddingModel):
         runs.  ``None`` uses the hub default revision.
     device:
         Torch device string (``"cpu"``, ``"cuda"``, ...).
+    model:
+        A **preconfigured** embedding model instead of loading one from
+        ``model_id``/``revision``/``device``.  Any object with an ``encode``
+        method (e.g. an already-instantiated ``SentenceTransformer``) is
+        wrapped as-is into the :class:`EmbeddingModel` interface; pass the
+        throughput/batch/device settings it was configured with and the
+        framework does not touch them.  Use this to reuse a model already
+        loaded on a GPU, with a different ``device_map``/quantization/pooling
+        or other features that cannot be expressed as ``model_id`` +
+        ``device``.  When given, ``model_id``/``revision``/``device`` are
+        ignored.
     """
 
     def __init__(
@@ -63,17 +75,26 @@ class SentenceTransformerEmbedding(EmbeddingModel):
         model_id: str = "sentence-transformers/all-MiniLM-L6-v2",
         revision: Optional[str] = None,
         device: Optional[str] = None,
+        model: Optional[Any] = None,
     ) -> None:
-        from sentence_transformers import SentenceTransformer
+        if model is not None:
+            self._model = model
+            self.model_id = getattr(model, "model_id", None) or model_id
+            self.revision = revision
+        else:
+            from sentence_transformers import SentenceTransformer
 
-        kwargs = {"device": device} if device else {}
-        self._model = SentenceTransformer(model_id, revision=revision, **kwargs)
+            kwargs = {"device": device} if device else {}
+            self._model = SentenceTransformer(model_id, revision=revision, **kwargs)
+            self.model_id = model_id
+            self.revision = revision
         get_dim = getattr(self._model, "get_sentence_embedding_dimension", None)
         if get_dim is None:
-            get_dim = self._model.get_embedding_dimension
-        self.dimension = int(get_dim())
-        self.model_id = model_id
-        self.revision = revision
+            get_dim = getattr(self._model, "get_embedding_dimension", None)
+        try:
+            self.dimension = int(get_dim()) if get_dim is not None else None
+        except Exception:
+            self.dimension = None
 
     def embed(self, text: str) -> Vector:
         return [float(x) for x in self._model.encode([text])[0]]

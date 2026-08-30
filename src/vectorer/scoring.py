@@ -21,6 +21,14 @@ pair is assigned its highest-priority level, and the posterior is the sigmoid
 of ``log(prior odds) + sum(log(m/u))`` -- the same algebra Splink's match
 weight uses, expressed without SQL.  "Vectoring" here is over the *batch* (all
 of a query's candidates, or every canopy pair) rather than row-by-row.
+
+By default the match function is *reflexive* (:attr:`idempotent`): a pair whose
+compared fields are content-identical scores exactly ``1.0``.  This guarantees
+the ``r ~ r`` property of the Swoosh Union-Class ICAR construction, which would
+otherwise fail for "thin" records (few non-null comparison fields) whose
+self-posterior -- all null levels carrying no evidence -- sits at the prior.
+Pass ``idempotent=False`` to recover the raw calibrated posterior for
+identical-content pairs.
 """
 
 from __future__ import annotations
@@ -37,6 +45,30 @@ DEFAULT_PRIOR = 0.0001
 DEFAULT_THRESHOLD = 0.85
 
 _LOG_CLIP = 690.0  # ln(1e300), matching Splink's clip on the total bayes factor
+
+
+def _values_equal(a: Any, b: Any) -> bool:
+    """Content equality for record values (scalars, lists, tuples, arrays).
+
+    ``None`` equals only ``None``; lists/tuples compare element-wise; arrays
+    compare with ``array_equal``; everything else uses ``==``.
+    """
+    if a is b:
+        return True
+    if a is None or b is None:
+        return False
+    if isinstance(a, np.ndarray) or isinstance(b, np.ndarray):
+        if not (isinstance(a, np.ndarray) and isinstance(b, np.ndarray)):
+            return False
+        return a.shape == b.shape and bool(np.array_equal(a, b))
+    if isinstance(a, (list, tuple)) or isinstance(b, (list, tuple)):
+        if not (isinstance(a, (list, tuple)) and isinstance(b, (list, tuple))):
+            return False
+        return len(a) == len(b) and all(_values_equal(x, y) for x, y in zip(a, b))
+    try:
+        return bool(a == b)
+    except Exception:
+        return False
 
 
 def _sigmoid(x: np.ndarray) -> np.ndarray:
@@ -171,12 +203,20 @@ class FellegiSunterScorer:
         comparisons: Optional[Sequence[Any]] = None,
         prior: Optional[float] = None,
         trained_settings: Optional[dict] = None,
+        idempotent: bool = True,
     ) -> None:
         self.table = table
         self.threshold = float(threshold)
         self.comparisons = list(comparisons) if comparisons is not None else []
         self.prior = float(prior) if prior is not None else table.prior
         self.trained_settings = trained_settings
+        # Reflexivity (idempotence of the match function): content-identical
+        # pairs are forced to posterior 1.0.  Without this, a "thin" record
+        # (few non-null comparison fields) would score against itself below
+        # the threshold (its null levels carry no evidence, leaving the prior),
+        # breaking the r ~ r property required by the Swoosh Union-Class ICAR
+        # construction.  Set False to restore the raw calibrated posterior.
+        self.idempotent = bool(idempotent)
         self._prior_bf = (
             table.prior / (1.0 - table.prior) if table.prior != 1.0 else float("inf")
         )
@@ -193,6 +233,7 @@ class FellegiSunterScorer:
         prior: float = DEFAULT_PRIOR,
         threshold: float = DEFAULT_THRESHOLD,
         base_records: Optional[Sequence[dict]] = None,
+        idempotent: bool = True,
     ) -> "FellegiSunterScorer":
         """Build from declared comparisons (``Comparison`` or ``ComparisonSpec``)."""
         specs = _as_specs(comparisons)
@@ -201,6 +242,7 @@ class FellegiSunterScorer:
             threshold=threshold,
             comparisons=_as_comparisons(comparisons),
             prior=prior,
+            idempotent=idempotent,
         )
 
     @classmethod
@@ -209,6 +251,7 @@ class FellegiSunterScorer:
         settings: dict,
         threshold: float = DEFAULT_THRESHOLD,
         base_records: Optional[Sequence[dict]] = None,
+        idempotent: bool = True,
     ) -> "FellegiSunterScorer":
         """Build from a resolved settings dict (trained m/u).
 
@@ -231,6 +274,7 @@ class FellegiSunterScorer:
             comparisons=comparisons,
             prior=prior,
             trained_settings=settings,
+            idempotent=settings.get("idempotent", idempotent),
         )
 
     def to_settings(self) -> dict:
@@ -238,6 +282,7 @@ class FellegiSunterScorer:
         return {
             "comparisons": [c.resolved() for c in self.comparisons],
             "probability_two_random_records_match": self.prior,
+            "idempotent": self.idempotent,
         }
 
     def to_dict(self) -> dict:
@@ -333,7 +378,135 @@ class FellegiSunterScorer:
     def _combined_bayes(self, pv: PairValues) -> np.ndarray:
         return np.exp(self._log_total_bayes(pv))
 
+    # -- Union-Class lift (Swoosh Union Class match function) ---------------
+
+    @staticmethod
+    def _is_union_value(value: Any) -> bool:
+        """A ``set``/``frozenset`` field value marks a union of alternatives.
+
+        List/tuple values are NOT union values: they are comparison-column
+        values (embedding vectors, tag lists) for the list-aware comparisons.
+        """
+        return isinstance(value, (set, frozenset))
+
+    def _needs_union_pairs(
+        self, left_records: Sequence[dict], right_records: Sequence[dict]
+    ) -> bool:
+        for left, right in zip(left_records, right_records):
+            for field in self.table.fields:
+                if self._is_union_value(left.get(field)) or self._is_union_value(right.get(field)):
+                    return True
+        return False
+
+    def _union_expand(
+        self, left: dict, right: dict, fields: Sequence[str]
+    ) -> list[tuple[dict, dict]]:
+        """Expand a ``(left, right)`` record pair whose compared fields may hold
+        frozensets (union of alternative values) into scalar ``(left, right)``
+        pairs covering every value combination.
+
+        An empty value set is treated as missing (``None``), matching the null
+        level semantics.  A pair with no set-valued compared field is returned
+        unchanged as a single scalar pair.
+        """
+        set_fields = [
+            field
+            for field in fields
+            if self._is_union_value(left.get(field)) or self._is_union_value(right.get(field))
+        ]
+        if not set_fields:
+            return [(left, right)]
+        expansions: list[tuple[dict, dict]] = [(left, right)]
+        for field in set_fields:
+            lv = left.get(field)
+            rv = right.get(field)
+            l_vals = list(lv) if self._is_union_value(lv) else [lv]
+            r_vals = list(rv) if self._is_union_value(rv) else [rv]
+            l_vals = l_vals if l_vals else [None]
+            r_vals = r_vals if r_vals else [None]
+            next_expansions: list[tuple[dict, dict]] = []
+            for lrec, rrec in expansions:
+                for x in l_vals:
+                    for y in r_vals:
+                        nl = dict(lrec)
+                        nl[field] = x
+                        nr = dict(rrec)
+                        nr[field] = y
+                        next_expansions.append((nl, nr))
+            expansions = next_expansions
+        return expansions
+
+    def _score_union_pairs(
+        self, left_records: Sequence[dict], right_records: Sequence[dict]
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Posterior + match weight under the union (existential) lift.
+
+        Every pair is expanded over its set-valued compared fields and scored
+        scalarly; the **maximum** posterior (and its match weight) over the
+        value combinations is returned -- the Union-Class ``M(r1,r2) = true iff
+        some value pair matches`` semantics.
+        """
+        n = len(left_records)
+        posterior = np.zeros(n, dtype=np.float64)
+        weight = np.full(n, -np.inf, dtype=np.float64)
+        for idx in range(n):
+            rows = self._union_expand(left_records[idx], right_records[idx], self.table.fields)
+            if not rows:
+                continue
+            lefts = [r[0] for r in rows]
+            rights = [r[1] for r in rows]
+            scores = self._scalar_posterior_pairs(lefts, rights)
+            best = int(np.argmax(scores))
+            posterior[idx] = float(scores[best])
+            weight[idx] = float(self._scalar_weight_pairs([lefts[best]], [rights[best]])[0])
+        return posterior, weight
+
+    # -- scalar core (no union expansion) -----------------------------------
+
+    def _scalar_posterior_batch(self, left: dict, candidates: Sequence[dict]) -> np.ndarray:
+        pv = self._candidate_pair_values(left, candidates)
+        posterior = _sigmoid(self._log_total_bayes(pv))
+        if self.idempotent:
+            posterior = self._apply_idempotence(posterior, pv)
+        return posterior
+
+    def _scalar_weight_batch(self, left: dict, candidates: Sequence[dict]) -> np.ndarray:
+        return self._log_total_bayes(self._candidate_pair_values(left, candidates)) / np.log(2.0)
+
+    def _scalar_posterior_pairs(
+        self, left_records: Sequence[dict], right_records: Sequence[dict]
+    ) -> np.ndarray:
+        pv = self._record_pair_values(left_records, right_records)
+        posterior = _sigmoid(self._log_total_bayes(pv))
+        if self.idempotent:
+            posterior = self._apply_idempotence(posterior, pv)
+        return posterior
+
+    def _scalar_weight_pairs(
+        self, left_records: Sequence[dict], right_records: Sequence[dict]
+    ) -> np.ndarray:
+        return self._log_total_bayes(self._record_pair_values(left_records, right_records)) / np.log(2.0)
+
     # -- inference ----------------------------------------------------------
+
+    def _self_equal_mask(self, pv: PairValues) -> np.ndarray:
+        """True where a pair's compared fields are content-identical.
+
+        Compares only ``table.fields`` (the columns the comparison set reads),
+        so two records that differ on non-compared attributes still count as
+        identical for matching -- the matcher is defined on the compared
+        columns.  ``None``-vs-scalar is never equal.
+        """
+        mask = np.ones(pv.n, dtype=bool)
+        for field in self.table.fields:
+            if not mask.any():
+                break
+            l = pv.left(field)
+            r = pv.right(field)
+            for i in np.flatnonzero(mask):
+                if not _values_equal(l[i], r[i]):
+                    mask[i] = False
+        return mask
 
     def score(self, left: dict, right: dict) -> float:
         """Match probability for one (query, candidate) pair."""
@@ -345,32 +518,66 @@ class FellegiSunterScorer:
         """Posterior + match weight per candidate from a single model evaluation."""
         if not candidates:
             return np.asarray([], dtype=np.float64), np.asarray([], dtype=np.float64)
-        log_total = self._log_total_bayes(self._candidate_pair_values(left, candidates))
-        return _sigmoid(log_total), log_total / np.log(2.0)
+        if self._needs_union_pairs([left] * len(candidates), candidates):
+            return self._score_union_pairs([left] * len(candidates), candidates)
+        pv = self._candidate_pair_values(left, candidates)
+        log_total = self._log_total_bayes(pv)
+        posterior = _sigmoid(log_total)
+        if self.idempotent:
+            posterior = self._apply_idempotence(posterior, pv)
+        return posterior, log_total / np.log(2.0)
+
+    def _apply_idempotence(self, posterior: np.ndarray, pv: PairValues) -> np.ndarray:
+        """Force posterior 1.0 for content-identical pairs (reflexivity)."""
+        equal = self._self_equal_mask(pv)
+        if equal.any():
+            posterior = posterior.copy()
+            posterior[equal] = 1.0
+        return posterior
 
     def score_batch(self, left: dict, candidates: Sequence[dict]) -> np.ndarray:
-        """Posterior per candidate, aligned with ``candidates``."""
+        """Posterior per candidate, aligned with ``candidates``.
+
+        Set-valued compared fields (a Union-Class record) are scored under the
+        existence lift: the maximum posterior over the cross value pairs.
+        """
         if not candidates:
             return np.asarray([], dtype=np.float64)
-        return _sigmoid(self._log_total_bayes(self._candidate_pair_values(left, candidates)))
+        if self._needs_union_pairs([left] * len(candidates), candidates):
+            posterior, _ = self._score_union_pairs([left] * len(candidates), candidates)
+            return posterior
+        return self._scalar_posterior_batch(left, candidates)
 
     def match_weight_batch(self, left: dict, candidates: Sequence[dict]) -> np.ndarray:
         """Splink-style ``match_weight = log2(total bayes factor)`` per candidate."""
         if not candidates:
             return np.asarray([], dtype=np.float64)
-        return self._log_total_bayes(self._candidate_pair_values(left, candidates)) / np.log(2.0)
+        if self._needs_union_pairs([left] * len(candidates), candidates):
+            _, weight = self._score_union_pairs([left] * len(candidates), candidates)
+            return weight
+        return self._scalar_weight_batch(left, candidates)
 
     def score_pairs(self, left_records: Sequence[dict], right_records: Sequence[dict]) -> np.ndarray:
-        """Vectorised posterior for equal-length ``left`` / ``right`` sequences."""
+        """Vectorised posterior for equal-length ``left`` / ``right`` sequences.
+
+        Set-valued compared fields (Union-Class records) are scored under the
+        existence lift (max over cross value pairs).
+        """
         if not left_records:
             return np.asarray([], dtype=np.float64)
-        return _sigmoid(self._log_total_bayes(self._record_pair_values(left_records, right_records)))
+        if self._needs_union_pairs(left_records, right_records):
+            posterior, _ = self._score_union_pairs(left_records, right_records)
+            return posterior
+        return self._scalar_posterior_pairs(left_records, right_records)
 
     def match_weight_pairs(self, left_records: Sequence[dict], right_records: Sequence[dict]) -> np.ndarray:
         """Vectorised match weights for equal-length sequences."""
         if not left_records:
             return np.asarray([], dtype=np.float64)
-        return self._log_total_bayes(self._record_pair_values(left_records, right_records)) / np.log(2.0)
+        if self._needs_union_pairs(left_records, right_records):
+            _, weight = self._score_union_pairs(left_records, right_records)
+            return weight
+        return self._scalar_weight_pairs(left_records, right_records)
 
     # -- training -----------------------------------------------------------
 

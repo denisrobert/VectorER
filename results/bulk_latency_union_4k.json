@@ -1,0 +1,51 @@
+{
+  "parameters": {
+    "total_records": 4160,
+    "duplicate_pairs_planted": 160,
+    "n_canopies": 102,
+    "overlap": 2,
+    "tau": 0.85,
+    "missing_rate": 0.3,
+    "seed": 42,
+    "embedder": "hashing",
+    "merge": "union"
+  },
+  "quality": {
+    "total_records": 4160,
+    "duplicate_pairs_planted": 160,
+    "tp": 160,
+    "fp": 0,
+    "fn": 0,
+    "precision": 1.0,
+    "recall": 1.0,
+    "merge_rate": 0.4252,
+    "n_clusters": 3059,
+    "n_non_singletons": 668,
+    "largest_cluster": 9,
+    "n_candidate_pairs": 378563,
+    "timing_seconds": {
+      "parse": 0.0021,
+      "embed": 0.6386,
+      "canopy": 0.3362,
+      "fellegi_sunter": 56.0448,
+      "swoosh": 0.043
+    },
+    "total_seconds": 57.0648,
+    "records_per_second": 72.9,
+    "candidate_pairs_per_second": 6754.6,
+    "fellegi_sunter_seconds_per_million_pairs": 148.046,
+    "seed": 42,
+    "wall_seconds": 57.2637
+  },
+  "environment": {
+    "python": "3.13.1",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "cpu": "Intel64 Family 6 Model 140 Stepping 1, GenuineIntel",
+    "threads": 8,
+    "libs": {
+      "numpy": "2.5.2",
+      "faiss": "1.15.0",
+      "sentence_transformers": "6.0.0"
+    }
+  }
+}

@@ -18,18 +18,96 @@ def test_identical_pair_scores_high_and_distinct_pair_scores_low(fs_scorer):
     assert fs_scorer.score(left, different) < 0.5
 
 
-def test_scorer_matches_splink_defaults_on_email_exact():
-    """An exact email match under default m/u reproduces Splink's posterior."""
+def test_scorer_matches_defaults_on_email_exact():
+    """An exact email match under default m/u reproduces the 0.0929 posterior.
+
+    ``idempotent=False`` is passed so the raw calibrated m/u math is tested
+    (with the reflexivity fix the same-content pair would otherwise be forced
+    to 1.0).
+    """
     from vectorer.comparisons import make_comparison
 
     scorer = FellegiSunterScorer.from_comparisons(
         [make_comparison("email_comparison", col_name="email")],
         prior=1e-4,
+        idempotent=False,
     )
     left = {"email": "john.smith@example.com"}
     right = {"email": "john.smith@example.com"}
     # Exact-match level has weight 10, so posterior = sigmoid(log(1e-4) + log(2^10)) = 0.0929.
     assert scorer.score(left, right) == pytest.approx(0.0929, abs=1e-4)
+
+
+def test_identical_pairs_are_reflexive_thin_records():
+    """Idempotence (r ~ r): content-identical pairs score 1.0, even thin ones.
+
+    Without the reflexivity fix a record whose comparison fields are mostly
+    missing would score against itself below the threshold (its self-posterior
+    is the prior for all-None fields).
+    """
+    from vectorer.comparisons import make_comparison
+
+    scorer = FellegiSunterScorer.from_comparisons(
+        [
+            make_comparison("jaro_winkler_at_thresholds", col_name="first_name"),
+            make_comparison("jaro_winkler_at_thresholds", col_name="last_name"),
+            make_comparison("date_of_birth_comparison", col_name="date_of_birth"),
+            make_comparison("email_comparison", col_name="email"),
+        ],
+        threshold=0.85,
+    )
+    all_none = {"first_name": None, "last_name": None, "date_of_birth": None, "email": None}
+    thin = {"first_name": "john", "last_name": None, "date_of_birth": None, "email": None}
+    # Reflexive regardless of how thin the record is.
+    assert scorer.score(all_none, dict(all_none)) == 1.0
+    assert scorer.score(thin, dict(thin)) == 1.0
+    # batch forms too
+    assert scorer.score_batch(thin, [dict(thin)])[0] == 1.0
+    assert scorer.score_pairs([thin], [dict(thin)])[0] == 1.0
+    # score_and_weight_batch returns the same posterior
+    post, weight = scorer.score_and_weight_batch(thin, [dict(thin)])
+    assert post[0] == 1.0
+    assert np.isfinite(weight[0])
+
+
+def test_identical_pairs_are_reflexive_after_disable_flag():
+    """idempotent=False restores the raw calibrated posterior for same-content pairs."""
+    from vectorer.comparisons import make_comparison
+
+    scorer = FellegiSunterScorer.from_comparisons(
+        [make_comparison("email_comparison", col_name="email")],
+        prior=1e-4,
+        idempotent=False,
+    )
+    left = {"email": "a@b.com"}
+    assert scorer.score(left, dict(left)) == pytest.approx(0.0929, abs=1e-4)
+
+
+def test_identical_pair_mask_ignores_non_compared_fields():
+    """Only the compared columns decide content-equality, not extra attributes."""
+    from vectorer.comparisons import make_comparison
+
+    scorer = FellegiSunterScorer.from_comparisons(
+        [make_comparison("email_comparison", col_name="email")],
+        threshold=0.85,
+    )
+    a = {"email": "a@b.com", "note": "original"}
+    b = {"email": "a@b.com", "note": "edited copy"}  # same compared field
+    assert scorer.score(a, b) == 1.0
+
+
+def test_idempotence_persists_in_round_trip(tmp_path):
+    from vectorer.comparisons import make_comparison
+
+    scorer = FellegiSunterScorer.from_comparisons(
+        [make_comparison("email_comparison", col_name="email")], idempotent=True
+    )
+    path = tmp_path / "scorer.json"
+    scorer.save(path)
+    loaded = FellegiSunterScorer.load(path)
+    assert loaded.idempotent is True
+    thin = {"email": None}
+    assert loaded.score(thin, dict(thin)) == 1.0
 
 
 def test_score_batch_aligned_with_candidates(fs_scorer):

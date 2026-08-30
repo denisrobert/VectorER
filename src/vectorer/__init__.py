@@ -13,6 +13,8 @@ The Fellegi-Sunter comparison set (:mod:`vectorer.comparisons`) is extensible
 and covers every comparison option currently available in Splink.
 """
 
+__version__ = "0.1.0"
+
 from .records import (
     DictParser,
     JsonLinesParser,
@@ -56,13 +58,16 @@ from .clustering import (
     SwooshClusterer,
     connected_components,
     gswoosh,
+    latest_merge,
     select_representative,
+    union_merge,
 )
 from .incremental import IncrementalPipeline, Resolution
 from .batch import BatchPipeline, BatchResult
 from .pins import EMBEDDING_MODEL_ID, EMBEDDING_MODEL_REVISION
 
 __all__ = [
+    "__version__",
     # records / parsing
     "RecordSchema",
     "Parser",
@@ -121,6 +126,8 @@ __all__ = [
     "gswoosh",
     "connected_components",
     "select_representative",
+    "union_merge",
+    "latest_merge",
     # pipelines
     "IncrementalPipeline",
     "Resolution",

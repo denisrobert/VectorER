@@ -234,6 +234,10 @@ def main() -> None:
     parser.add_argument("--tau", type=float, default=DEFAULT_TAU)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--embedder", choices=["hashing", "sentence"], default="hashing")
+    parser.add_argument("--merge", choices=["rep", "union"], default="rep",
+                        help="Swoosh merge function: 'rep' = select_representative "
+                             "(default, a real member record); 'union' = union_merge "
+                             "(synthetic master record with set-valued fields)")
     parser.add_argument("--compare", default=None,
                         help="path to original section7_results.json to tabulate scoring "
                              "throughput against")
@@ -252,6 +256,8 @@ def main() -> None:
 
     embedder = build_embedder(args.embedder)
     scorer = FellegiSunterScorer.from_comparisons(make_comparisons(), threshold=args.tau)
+    from vectorer.clustering import union_merge
+    merge_fn = union_merge if args.merge == "union" else None
     pipeline = BatchPipeline(
         embedder=embedder,
         scorer=scorer,
@@ -259,9 +265,10 @@ def main() -> None:
         overlap_m=args.overlap,
         canopy_seed=args.seed,
         tau=args.tau,
+        merge=merge_fn,
     )
     print(f"Running batch pipeline (canopies={n_canopies}, overlap={args.overlap}, "
-          f"tau={args.tau}, embedder={args.embedder})...")
+          f"tau={args.tau}, embedder={args.embedder}, merge={args.merge})...")
 
     t0 = time.perf_counter()
     quality = cluster_quality(pipeline, records, twin_entities, args.seed)
@@ -277,6 +284,7 @@ def main() -> None:
             "missing_rate": args.missing_rate,
             "seed": args.seed,
             "embedder": args.embedder,
+            "merge": args.merge,
         },
         "quality": quality,
         "environment": environment_block(),

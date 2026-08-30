@@ -86,7 +86,10 @@ when the best candidate posterior is strictly below `tau` (or
 
 `build_incremental_pipeline` defaults to a deterministic, dependency-free
 hashing embedder; pass `embedder=` a `SentenceTransformerEmbedding` (or any
-`EmbeddingModel`) for a real model.
+`EmbeddingModel`) for a real model. To reuse a model you already loaded — on a
+GPU, quantized, with custom pooling — hand the framework the instance:
+`SentenceTransformerEmbedding(model=loaded)` wraps any preconfigured
+`encode`-capable model as-is (see `docs/user_guide.md` §0).
 
 ### Batch pipeline
 

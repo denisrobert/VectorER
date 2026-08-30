@@ -51,6 +51,34 @@ objects exposing `to_dict()` are coerced automatically
   Used by the tests, the examples, and the benchmarks; switch to the
   sentence-transformer embedder when you need semantic blocking.
 
+Everywhere the pipelines take an embedder, they take an *instance*, not a
+model name — so "the model" is whatever you hand over, already configured:
+
+```python
+from sentence_transformers import SentenceTransformer
+from vectorer.embeddings import SentenceTransformerEmbedding
+from vectorer.incremental import build_incremental_pipeline
+from vectorer.pins import EMBEDDING_MODEL_ID, EMBEDDING_MODEL_REVISION
+
+# Framework loads it for you from an id...
+embedder = SentenceTransformerEmbedding(EMBEDDING_MODEL_ID, EMBEDDING_MODEL_REVISION)
+
+# ...or you wrap a *preconfigured* model object (GPU, device_map,
+# quantization, custom pooling, any SentenceTransformer-compatible encode).
+loaded = SentenceTransformer(EMBEDDING_MODEL_ID, device="cuda:0",
+                             model_kwargs={"torch_dtype": "float16"})
+embedder = SentenceTransformerEmbedding(model=loaded)
+pipeline = build_incremental_pipeline(references, embedder=embedder, ...)
+```
+
+`model=` wraps any object with an `encode` method as-is — the framework never
+re-initializes it, so everything you configured on it (device, batch size,
+prompt/instruction, ONNX/quantized backend, revision) is what gets used. Pass
+preconfigured `EmbeddingModel` implementations anywhere an `embedder=` is
+accepted; `SentenceTransformerEmbedding(model=...)` just adapts an existing
+`sentence_transformers` model into that interface. Only `model_id`-constructed
+wrappers need the pinned `revision=`.
+
 ---
 
 ## 1. The comparison set (choose your model)
@@ -76,10 +104,17 @@ comparisons = [
 ]
 ```
 
-One comparison object = one attribute = an ordered list of levels
-(`null -> exact -> fuzzy thresholds -> else`). Each non-null level carries an
-`m`/`u` pair (default m/u are assigned at build time; see `architecture.md` §4,
-and §4 of this guide for calibrating them).
+A comparison object is an ordered list of levels
+(`null -> exact -> fuzzy thresholds -> else`) evaluated over the column or
+columns it names. Each non-null level carries an `m`/`u` pair (default m/u are
+assigned at build time; see `architecture.md` §4, and §5 of this guide for
+calibrating them). The mapping between attributes and comparison objects is
+not one-to-one: a comparison may read several columns (`forename_surname_comparison`,
+`distance_in_km_at_thresholds`), and the same attribute may back several
+comparison objects. The thresholded built-ins are a compact form of that —
+`jaro_winkler_at_thresholds` runs a single Jaro-Winkler pass but defines one
+level per threshold, each with its own `m`/`u`; you could write the same
+decomposition by hand, e.g. as a custom comparison per non-overlapping level.
 
 Custom comparisons are registered with `register_comparison`; for the built-in
 families that need extra columns, e.g.:
@@ -96,13 +131,243 @@ make_comparison("absolute_date_difference_at_thresholds",
 
 ---
 
-## 2. Incremental ER (one record at a time)
+## 2. The algorithms in practice: Fellegi–Sunter and the Swoosh family
+
+Before wiring your data in, it is worth having a precise mental model of the two
+algorithms you are composing and the three choices they expose. The framework
+lets you pick a **comparison set** (the FS match function), a **merge function**
+(how a matched group is combined into one record), and thereby an implicit
+**domination order** (which records can be treated as "covered" and discarded).
+Getting these right is what separates a config that behaves sensibly on your
+data from one that quietly under- or over-merges.
+
+### 2.1 Fellegi–Sunter in one paragraph
+
+FS treats each attribute comparison as *evidence*, not a verdict. For a pair of
+records and one attribute, the pair lands in exactly one **level** (e.g. `null`,
+`exact`, `jaro-winkler ≥ 0.9`, `... ≥ 0.7`, `else`). Each non-null level carries
+two probabilities you can reason about like this:
+
+- **m** = *"if these two records really are the same entity, how likely is this
+  level?"* — usually highest for `exact`.
+- **u** = *"if they are in fact different entities, how likely is this level?"* —
+  tiny for `exact` on a rare value, larger for `else`.
+
+The score accumulates the log of the ratio `m/u` (the *match weight*) per
+comparison plus a base prior (the probability two *random* records match), and
+the posterior `P(match | data)` is the sigmoid of that total. A comparison whose
+level is `null` contributes **no evidence** (weight 0) — this is why a record
+with most fields missing has a low self-score, and why the scorer is reflexive
+by default (see the architecture doc §4). The **match threshold `tau`** on that
+posterior is the operating point you choose in §6.
+
+The key practitioner takeaway: **you are not defining hard rules; you are
+choosing which *attributes* you trust and how strongly.** An `exact` match on a
+high-cardinality field (email) is worth far more than an `exact` match on a
+low-cardinality field (gender). That ordering — and the relative value of each
+level — is exactly what `m/u` encodes.
+
+### 2.2 Choosing comparators
+
+Three decisions per attribute:
+
+1. **Which attributes are discriminative?** Prefer fields that vary across
+   entities (full name, date of birth, email, postcode) over fields that are
+   often identical by chance (gender, province, "0000" zip). A comparison on a
+   non-discriminative field mostly dilutes the score — leave it out or give it
+   coarse thresholds.
+2. **What kind of fuzziness does the attribute need?**
+   - *Spelling / OCR* → `jaro_winkler_at_thresholds` (names), or `levenshtein`
+     / `damerau_levenshtein` for harder edit noise.
+   - *Set-valued* (tags, phone-list, embedding column) → `jaccard`,
+     `cosine_similarity`, `array_intersect`, `pairwise_string_distance`.
+   - *Numeric / temporal* → `absolute_date_difference`,
+     `absolute_time_difference`, `distance_in_km` (lat/long).
+   - *Structured identifiers* → `email_comparison`, `postcode_comparison`,
+     `date_of_birth_comparison`, `name_comparison`.
+   - When nothing built-in fits, register a custom comparison (a level whose
+     test is a vectorized `test(PairValues, cache) -> mask` callable) or wrap an
+     arbitrary distance function via `distance_function_at_thresholds`.
+3. **How many thresholds / how coarse?** Thresholds should mirror how much
+   noise you tolerate in that field. Two or three thresholds is usually right:
+   a near-exact band, a fuzzy band, and everything else. Too many thresholds
+   over-fit the m/u and slow calibration.
+
+**Level-ordering matters.** In `vector-er` levels are ordered most-to-least
+agreement (`exact` before fuzzy), and a pair takes its *first matching* level.
+Keep that order: an attribute with thresholds `[0.9, 0.8, 0.7]` means "exact →
+very close → reasonably close → else", which is what the default m/u scheme
+assumes.
+
+A sensible starting point for people (from the original project) is the set in
+§1: fuzzy first/last name, exact date-of-birth, exact+fuzzy email, fuzzy
+address. For organizations consider name, postcode (with km threshold as a
+fallback when postcodes are stale), and date-of-birth.
+
+### 2.3 The Swoosh family: match, merge, domination
+
+Swoosh turns the pairwise scorer into *clusters* by repeatedly **merging**
+records that match. It is defined by a **match function** `M` (already chosen —
+the FS posterior ≥ `tau`) and a **merge function** `μ` (how a matched group
+becomes one record). From those it inherits a **domination order** used to
+discard "covered" records.
+
+The Swoosh paper — Benjelloun, O., Garcia-Molina, H., Menestrina, D., Su, Q.,
+Whang, S. E., & Widom, J. (2009). *Swoosh: A Generic Approach to Entity
+Resolution.* The VLDB Journal, 18(1), 255–276.
+[doi:10.1007/s00778-008-0098-x](https://doi.org/10.1007/s00778-008-0098-x) —
+identifies four *ICAR* properties of `M` and `μ` that make the computation
+order-independent and let you discard dominated records safely:
+**I**dempotence, **C**ommutativity, **A**ssociativity, and **R**epresentativity
+(re-matching). If `M` and `μ` are ICAR, record pairs can match in *any* order
+and a dominated record can be thrown away anytime — which is what enables the
+fast R-Swoosh/F-Swoosh variants. If they are not ICAR, the only *correct*
+algorithm is **G-Swoosh**, which re-tests merged representatives and cannot
+discard records.
+
+**Which of our algorithms is which:**
+
+| Entry point | Swoosh algorithm | When to use |
+|---|---|---|
+| `SwooshClusterer.cluster` (default batch path; `BatchPipeline.run`) | Transitive closure over scored pairs (an R-Swoosh-style approximation — assumes matches are effectively transitive, i.e. a strong domination) | Production, large data; fast; results near G-Swoosh (§5.5 of the paper) |
+| `cluster_with_merger` / `gswoosh` | **G-Swoosh** (correct for non-ICAR `M`/`μ`; re-tests representatives) | Exact clustering on modest data, audits, or custom merge functions whose re-match behaviour you care about |
+
+Since the FS matcher is only partially ICAR (commutative, merge often
+associative, but not always representative), most production use is the fast
+transitive-closure path; G-Swoosh is there when you need the exact answer.
+That exactness comes at a significant performance cost: it re-scans the pair
+set until a full pass merges nothing, and every merge that yields a new
+representative invalidates the scorer cache for that representative's edges,
+re-invoking the expensive scorer and re-testing pairs — an entire pass's worth
+of work for each merge round that the one-shot closure path never pays.
+
+### 2.4 Choosing the merge function
+
+The merge function decides what a *resolved entity* looks like. The framework
+ships three; pick by what your users need to consume:
+
+1. **`select_representative`** (default) — the cluster is represented by the
+   most *complete* existing member (most non-`None` fields). Concrete, one row,
+   but you "lose" the other records' differing values (no golden value; a
+   completely-populated older record may shadow a sparser newer one).
+   *Choose when* each cluster must map to a single real record (e.g. a golden
+   reference index, dedupe of an identity table where a member row is the
+   canonical one).
+2. **`union_merge`** — a synthetic master record whose fields hold **all**
+   values seen (set-valued fields; the Swoosh Union Class). Nothing is chosen
+   or lost — the caller reviews the value sets. Best *recall* of variants;
+   pairs re-match by *existence* over value sets, so it is the cleanest
+   ICAR-compatible merge.
+   *Choose when* you want to preserve every alias/variant (people with multiple
+   spellings, products with multiple titles) and don't need a single
+   "winning" value per field.
+3. **`latest_merge(timestamp_field=...)`** — a synthetic master whose fields
+   hold the **newest** non-`None` value per attribute (per-field recency), i.e.
+   the master reflects the latest information as of the newest record.
+   *Choose when* records are temporal (census waves, address history,
+   evolving profiles) and the newest observation is authoritative.
+
+The merge function also fixes your **domination order** (see §2.5). If your
+custom merge does not preserve all values (e.g. averages a price, or keeps only
+the longest string), the combination is not ICAR and you should cluster with
+G-Swoosh, not rely on transitive-closure approximations blindly.
+
+**Writing your own.** Any callable with the same signature as the built-ins
+works wherever a merge is accepted:
+
+```python
+def my_merge(records, positions):
+    """Return (representative_record, representative_position).
+
+    representative_record  -- the object that represents the fused cluster;
+                              either one of the members or a synthetic master.
+    representative_position -- the index into `records` of that representative
+                              member, or -1 when the representative is
+                              synthetic (not identical to any single member).
+    """
+    members = [records[p] for p in positions]
+    ...
+    return representative, representative_position
+```
+
+The contract:
+
+- `records` is the full record list and `positions` the positions of the
+  members being fused (an already-merged cluster can appear as a single group,
+  so the members may span several original positions).
+- The returned `representative_record` is the record object that will
+  represent the fused cluster in future matches. `representative_position` is
+  the **index into the original `records` list** of the member that
+  `representative_record` corresponds to — i.e. the position the cluster is
+  "anchored" at for reporting, and the value stored in
+  `Cluster.representative_position`. It must be one of the `positions` you
+  were given: if `representative_record` *is* one of the members, return its
+  index into `records` (this is what `select_representative` does; a
+  timestamp-based merge returns the newest member's index). If instead you
+  build a **synthetic master record** from the members' values — a record that
+  is not identical to any single member — there is no such index, and you
+  return `-1` (this is what `union_merge` does). Synthetic masters holding
+  `set`/`frozenset` fields are re-matched through the scorer's Union-Class
+  existence lift.
+- Pass it anywhere the built-ins go: `build_batch_pipeline(..., merge=my_merge)`
+  for the default transitive-closure path, or
+  `SwooshClusterer(tau=..., merge=my_merge)` /
+  `gswoosh(records, pairs, match_probability, tau=..., merge=my_merge)` for
+  full G-Swoosh re-matching.
+
+Keep the caveats above in mind: if the merge **discards** values (chooses one
+winner per field, picks the longest string), it is not ICAR — use G-Swoosh
+rather than trusting the closure path, and expect re-match behaviour to be
+merge-specific.
+
+### 2.5 Domination in this framework
+
+Swoosh domination says "record `r1` is dominated by `r2`" if `r2` can stand in
+for `r1` in every future match — formally `r1 ⩽ r2 ⟺ r1 ≈ r2` and `μ(r1,r2)=r2`
+(merge *domination*). It matters because a dominated record can be dropped,
+shrinking the candidate set. The framework does **not** take a separate
+domination oracle; the domination order is an *emergent consequence of the
+merge function you pick*:
+
+- **`select_representative`**: after a merge, the non-representative members
+  are dominated by the representative (the representative *is* `μ(r1,r2)`).
+- **`union_merge`**: every member is dominated by the union master (the master
+  contains all their values), so **all** values are preserved — the strongest,
+  cleanest domination; it is exactly the Swoosh "Union Class" where domination
+  is set inclusion.
+- **`latest_merge`**: a member is dominated once every field the master keeps
+  is at least as new as its own (recency domination); older records are covered
+  by the newest master.
+
+When can you *act* on domination (discard dominated records early)? Only when
+`M` and `μ` are ICAR. In practice:
+
+- With **`union_merge` + the existence-lifted match**, ICAR holds (the
+  reflexive fix + commutativity + Union-Class), so dominated records can be
+  discarded and R/F-Swoosh reasoning applies.
+- With **`select_representative` or any non-union custom merge**, ICAR is not
+  guaranteed, so the framework does *not* discard on domination — it uses
+  G-Swoosh (re-testing) when you ask for it, or the transitive-closure
+  approximation (which is effectively *assuming* strong transitivity) in the
+  default batch path.
+
+Practitioner rule of thumb: if your merge **preserves all values** (union) or
+recency-dominates cleanly (timestamped latest-wins), you can lean on the cheap
+closure path and trust it; if your merge **chooses/discards** values or fields
+(the `select_representative` "keep one row" case), treat the results as an
+approximation and use G-Swoosh when correctness is critical. The domination
+order is therefore *your choice of merge function*, not a separate box to fill
+in.
+
+---
+
+## 3. Incremental ER (one record at a time)
 
 Use incremental ER when records arrive as a stream and each must be checked
 against an existing reference population — the online / API / streaming-insert
 setting of the original project's resolver.
 
-### 2.1 Build the reference store and pipeline
+### 3.1 Build the reference store and pipeline
 
 ```python
 from vectorer.incremental import build_incremental_pipeline
@@ -125,7 +390,7 @@ FAISS flat index over L2-normalized vectors = cosine) over `references`, then a
 the deterministic hashing embedder; if you already have a calibrated scorer,
 pass `scorer=` instead of `comparisons=`.
 
-### 2.2 Resolve a query
+### 3.2 Resolve a query
 
 ```python
 query = {"first_name": "Jon", "last_name": "Smyth",
@@ -143,7 +408,7 @@ r.embedding                # the query's embedding vector
 -> FS scoring of the top-k -> classify. A query is a match if any candidate's
 posterior `>= tau`.
 
-### 2.3 Persisting the reference store
+### 3.3 Persisting the reference store
 
 Embedding 50k records is the expensive, one-off step. Persist it so a new
 process resolves without re-embedding:
@@ -166,7 +431,7 @@ pipeline = IncrementalPipeline(
 )
 ```
 
-### 2.4 (Re)building from a scratch or empty store
+### 3.4 (Re)building from a scratch or empty store
 
 The incremental store can bootstrap itself: start with an empty database and
 `add`/`ingest` records as they resolve. Combined with the embedding model:
@@ -177,10 +442,10 @@ pipeline = IncrementalPipeline(db, scorer, k=20, tau=0.85)
 
 for record in stream:
     pipeline.ingest(record)          # parse + embed + append; or
-    # pipeline.ingest_novel(record)  # append only if no existing match (see §2.5)
+    # pipeline.ingest_novel(record)  # append only if no existing match (see §3.5)
 ```
 
-### 2.5 Ingestion modes
+### 3.5 Ingestion modes
 
 - `pipeline.add(records)` — append already-parsed records.
 - `pipeline.ingest(payload)` — parse + embed + append, returns new position.
@@ -191,7 +456,7 @@ for record in stream:
 - `pipeline.ingest_novel_many(deck)` — batch version, returns a position list
   aligned with the input (`None` = skipped duplicate).
 
-### 2.6 Using stage hooks
+### 3.6 Using stage hooks
 
 Every stage is a public method you can override or call directly:
 
@@ -208,14 +473,14 @@ the blocker, add a pre-filter, cache features).
 
 ---
 
-## 3. Batch ER (whole dataset, deduplicate + cluster)
+## 4. Batch ER (whole dataset, deduplicate + cluster)
 
 Use batch ER when you have a complete dataset and want to find all duplicate
 entities at once — the bulk deduplication analogue of the incremental use case.
 The chain is: parse all -> embed all -> canopy blocking on the embedded dataset
 -> FS scoring of every canopy candidate pair -> Swoosh clustering.
 
-### 3.1 Build and run
+### 4.1 Build and run
 
 ```python
 from vectorer.batch import build_batch_pipeline, BatchPipeline
@@ -234,7 +499,7 @@ pipeline = build_batch_pipeline(
 result = pipeline.run(dataset)
 ```
 
-### 3.2 Reading the result
+### 4.2 Reading the result
 
 ```python
 result.n_clusters                      # number of distinct entities found
@@ -249,7 +514,7 @@ result.timing                          # per-stage seconds
 `Cluster` exposes `member_positions` (record indices) and a `representative`
 record (the most complete member, by non-null field count).
 
-### 3.3 Saving outputs
+### 4.3 Saving outputs
 
 ```python
 # Persist the Swoosh assignment (cluster_id per record) as JSON
@@ -264,7 +529,7 @@ schema = RecordSchema(("first_name", "last_name", "date_of_birth", "email"),
 id_to_cluster = result.cluster_ids_of(schema)   # {"r000": 5, ...}
 ```
 
-### 3.4 Tuning candidate generation
+### 4.4 Tuning candidate generation
 
 - `n_canopies` — more canopies = smaller cells = fewer candidate pairs but
   higher risk of splitting near-boundary true matches.
@@ -275,32 +540,105 @@ id_to_cluster = result.cluster_ids_of(schema)   # {"r000": 5, ...}
 **Swoosh re-matching (optional).** By default `run` does the transitive closure
 over above-`tau` pairs (standard *score then cluster*). If you want full
 G-Swoosh behaviour — re-matching merged representatives against the candidate
-pair set — use the pair-driven entry points:
+pair set — use the pair-driven entry points. `scorer_match` receives the two
+**representative records** (not positions), which may be synthetic master
+records; `merge` defaults to `select_representative` but can be `union_merge`
+or `latest_merge`:
 
 ```python
 from vectorer.blocking import canopy_blocking
-from vectorer.clustering import SwooshClusterer
+from vectorer.clustering import SwooshClusterer, union_merge
 
 parsed = result.records                            # the record dicts (canopy uses them)
 vectors = pipeline.embed_all(parsed)
 canopy = pipeline.block(vectors)
 pairs = list(canopy.candidate_pairs())
 scored = pipeline.score(parsed, pairs)
-assignment = SwooshClusterer(tau=0.85).cluster_with_merger(
+assignment = SwooshClusterer(
+    tau=0.85,
+    merge=union_merge,          # or latest_merge(..., timestamp_field="ts")
+).cluster_with_merger(
     parsed, pairs,
-    scorer_match=lambda li, ri: pipeline.scorer.score(parsed[li], parsed[ri]),
+    scorer_match=lambda l, r: pipeline.scorer.score(l, r),   # records, not positions
 )
+# union_merge representatives are synthetic (representative_position == -1)
+# set-valued master records; the scorer's Union-Class lift scores them.
 ```
+
+### Choosing a merge function
+
+- `select_representative` (default) — pick the most complete member as the
+  cluster's record (which is a real member; `representative_position` is a
+  valid index). Good default when you want a concrete record per entity.
+- `union_merge` — a master record whose fields hold **all** values seen across
+  the matched records (set-valued fields; the Swoosh Union Class). No "golden
+  value" is chosen; caller reviews the value sets. The scorer's Union-Class
+  lift re-matches these set-valued records by existence over value pairs.
+- `latest_merge(timestamp_field="timestamp")` — a master record whose fields
+  hold the **most recent** value per attribute (newest non-`None` member per
+  field), so the merged record reflects the latest information.
+
+For the batch pipeline, pass the merge function directly:
+`build_batch_pipeline(..., merge=union_merge)`.
+
+To provide your own, use the same `merge(records, positions) ->
+(representative, position)` signature as the built-ins (see §2.4) — for
+example a custom `my_merge` above becomes
+`build_batch_pipeline(..., merge=my_merge)`; pass it to
+`SwooshClusterer(tau=..., merge=my_merge)` the same way for the pair-driven
+G-Swoosh path.
 
 ---
 
-## 4. Calibrating the Fellegi-Sunter parameters
+## 5. Calibrating the Fellegi-Sunter parameters
 
 The default `m/u` values produce reasonable scores out of the box, but for
 production-grade probabilities you should calibrate them — either supervised
-(we have labels) or unsupervised (we have a duplicate-bearing population).
+(we have labels) or unsupervised (we have a *duplicate-bearing* population;
+see §5.2 for why that qualifier matters).
 
-### 4.1 Supervised: calibrate from labelled pairs
+### 5.0 Term-frequency adjustments (weighting rare exact matches more)
+
+The base `u` for an exact match assumes that *any* two matching values are
+equally unlikely — but that is wrong for skewed fields. On a "surname" column
+where most records are "smith", an exact match on "smith" is weak evidence
+(these records probably differ elsewhere), while an exact match on "soetoro"
+is strong evidence the records are the same person. **Term-frequency (TF)
+adjustment** rescales the exact-match evidence by how *rare* the matched value
+is in the reference population: the effective `u` of the exact level is divided
+by `max(tf_left, tf_right)^weight`, so a rare exact match posts a much larger
+posterior than a common one.
+
+How to use it — it is **opt-in and needs a reference population**, and without
+`base_records=` the adjustment silently does nothing:
+
+```python
+comparisons = [
+    *base_comparisons,  # fuzzy first/last name, DOB, email...
+    make_comparison("exact_match", col_name="surname", term_frequency_adjustments=True),
+]
+
+scorer = FellegiSunterScorer.from_comparisons(
+    comparisons, base_records=reference_population,  # REQUIRED for TF
+)
+```
+
+Guidance:
+
+- Enable it on fields with **highly skewed value distributions** (surnames,
+  street names, employer, "state"), and leave it off for fields that are
+  effectively unique (email, full DOB, national IDs) where every value is
+  already rare.
+- Only the `exact_match` comparison carries the flag; fuzzy comparisons are
+  unaffected.
+- The reference population should be **representative of the data you score**
+  (ideally the same store/population). Pass it to `from_comparisons`/`from_settings`
+  as `base_records=`.
+- The TF metadata (column, weight, `tf_minimum_u_value` floor) survives
+  calibration and persistence; calibrated `u` of the exact level is what gets
+  scaled.
+
+### 5.1 Supervised: calibrate from labelled pairs
 
 Construct a list of records with an `is_match` flag (1 = match, 0 = non-match)
 and, for each compared field, both the left and right values:
@@ -331,12 +669,12 @@ pipeline = build_incremental_pipeline(refs, embedder=embedder,
 # few hundred labelled pairs to get sharp, production-useful probabilities.
 ```
 
-### 4.2 Unsupervised: expectation maximisation
+### 5.2 Unsupervised: expectation maximisation
 
-Provide a *duplicate-bearing* population (e.g. the batch input, or a sample of
-the reference records with planted duplicates). The estimator generates
-candidate pairs under blocking rules, estimates `u` from uniform random pairs,
-and fits `m` plus the match prior by EM:
+EM needs **duplicate pairs in the training population** — this is not
+optional. The estimator generates candidate pairs under blocking rules,
+estimates `u` from uniform random pairs, and fits `m` plus the match prior by
+EM:
 
 ```python
 scorer_em = FellegiSunterScorer.from_comparisons(comparisons).fit_em(
@@ -349,10 +687,40 @@ pipeline = build_batch_pipeline(embedder=embedder, scorer=scorer_em,
                                 n_canopies=256, overlap_m=2, tau=0.85)
 ```
 
-If you have a population without duplicates, plant them (or use the supervised
-route). EM on a set with zero duplicate pairs raises a clear error.
+The EM loop infers which blocked pairs are true matches and fits `m` (plus the
+match prior) from them. If the population contains no duplicates, there are no
+true matches among the blocked candidates, and EM has nothing to fit `m`
+against — it silently mis-fits instead of failing.
 
-### 4.3 Persisting the trained model
+The common failure is feeding a **pre-deduplicated** population (one row per
+entity, e.g. an already-cleaned reference store). Such a set still generates
+blocked candidate pairs — records that share a blocking key (same first name,
+same date of birth) but are different entities — so the run does **not** raise
+an error. The EM loop treats those chance co-blocked non-matches as evidence
+for the agreement levels, over-estimating the `m` probabilities and distorting
+the base prior; the trained scorer then over-confidently matches records that
+merely look alike. Fit on the *raw* input instead:
+
+- the batch input itself, **when it contains genuine near-duplicates** (e.g. a
+  raw export with duplicate rows) — the natural choice for §4's batch path;
+- or a sample of the reference population into which you have **planted
+  duplicates** (copy records, perturb a field or two) for the incremental use
+  case.
+
+Avoid fully deduplicated / clean reference sets. If that is all you have,
+either plant duplicates (carefully — the planted duplicates define exactly
+what the fit sees) or use the supervised route (§5.1).
+
+Sanity-check the fit before trusting it: each comparison's fitted `m` should
+concentrate on the agreement levels (exact, near-exact), and the base prior
+(`probability_two_random_records_match`) should be small but not implausibly
+tiny. A near-zero prior, or an `m` spread evenly across all levels, says no
+true matches were seen — the input was effectively duplicate-free, and the
+result should be discarded. (The one case that *does* raise a clear error is a
+population that generates zero blocked candidate pairs at all — for example a
+tiny set where no two records share a blocking key.)
+
+### 5.3 Persisting the trained model
 
 ```python
 scorer_em.save("model.json")                  # comparisons (with m/u) + prior
@@ -365,7 +733,7 @@ inline; `save`/`load` wrap them as JSON.
 
 ---
 
-## 5. Choosing the match threshold (`tau`)
+## 6. Choosing the match threshold (`tau`)
 
 `tau` is the posterior at which a pair is declared a match. It is the
 *operating point* of the Fellegi-Sunter decision rule:
@@ -396,9 +764,9 @@ precision/recall as the previous project's experiments did.
 
 ---
 
-## 6. Practical notes from the original project's use case
+## 7. Practical notes from the original project's use case
 
-### 6.1 Data preparation
+### 7.1 Data preparation
 
 - Lowercase and normalize values before embedding and comparison (suffixes,
   abbreviations, whitespace). The original project serializes each person with
@@ -413,8 +781,9 @@ precision/recall as the previous project's experiments did.
   `make_comparison("exact_match", col_name="surname", term_frequency_adjustments=True)`
   with the reference population passed as `base_records=` to the scorer
   (`FellegiSunterScorer.from_comparisons(comparisons, base_records=refs)`).
+  See §5.0 for how TF adjustment works and when to enable it.
 
-### 6.2 Blocking recall
+### 7.2 Blocking recall
 
 - Incremental top-k: the original project's `k=20` achieved **99.6%** top-k
   blocking recall on the 50k person index (missing-rate 0.3). Raise `k` to
@@ -422,7 +791,7 @@ precision/recall as the previous project's experiments did.
 - Bulk canopies: overlap `m ≥ 2` recovers near-boundary matches; the 52k-record
   benchmark deduplicated with recall ≥ 0.97 at `overlap_m=1–2`.
 
-### 6.3 What the numbers look like (sanity anchors)
+### 7.3 What the numbers look like (sanity anchors)
 
 On the original 50k-reference incremental use case (MiniLM embeddings,
 k=20):
@@ -439,7 +808,7 @@ recall 0.97–1.0.
 Treat every number as a sanity check, not a promise: your embedding, data
 quality and hardware will move them.
 
-### 6.4 Errors to expect
+### 7.4 Errors to expect
 
 - `calibrate_from_pairs` requires both 1s and 0s in `is_match`.
 - `fit_em` raises if no blocking-rule candidate pairs are generated — add
@@ -452,7 +821,7 @@ quality and hardware will move them.
 
 ---
 
-## 7. End-to-end script skeleton
+## 8. End-to-end script skeleton
 
 Putting the pieces together for the incremental use case:
 
@@ -494,5 +863,5 @@ for raw in incoming:
            "best_candidate": result.matches[0].candidate_position if result.matches else None}
 ```
 
-For the batch analogue, see §3; the two pipelines share the comparison set,
+For the batch analogue, see §4; the two pipelines share the comparison set,
 scorer and calibration, so a model trained once serves both.

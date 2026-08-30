@@ -1,0 +1,59 @@
+{
+  "parameters": {
+    "total_records": 4160,
+    "duplicate_pairs_planted": 160,
+    "n_canopies": 102,
+    "overlap": 2,
+    "tau": 0.85,
+    "missing_rate": 0.3,
+    "seed": 42,
+    "embedder": "hashing-384",
+    "algorithm": "G-Swoosh",
+    "merge": "union",
+    "swoosh_only": true
+  },
+  "quality": {
+    "total_records": 4160,
+    "duplicate_pairs_planted": 160,
+    "tp": 160,
+    "fp": 0,
+    "fn": 0,
+    "precision": 1.0,
+    "recall": 1.0,
+    "merge_rate": 0.3988,
+    "n_clusters": 3188,
+    "n_non_singletons": 687,
+    "largest_cluster": 7,
+    "n_candidate_pairs": 378563,
+    "n_pairs_evaluated": 369165,
+    "n_pairs_matched": 972,
+    "timing_seconds": {
+      "setup_seconds": 69.6135,
+      "gswoosh_swoosh": 399.6032,
+      "parse": 0.0,
+      "embed": 0.0,
+      "canopy": 0.0,
+      "fellegi_sunter": 0.0,
+      "total_seconds": 469.2167
+    },
+    "total_seconds": 469.2167,
+    "records_per_second": 8.9,
+    "fellegi_sunter_call_stats": {
+      "n_cached": 243047,
+      "n_re_scored": 126118,
+      "n_distinct_records_tested": 126118
+    },
+    "merge_function": "union",
+    "algorithm": "G-Swoosh"
+  },
+  "environment": {
+    "python": "3.13.1",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "cpu": "Intel64 Family 6 Model 140 Stepping 1, GenuineIntel",
+    "threads": 8,
+    "libs": {
+      "numpy": "2.5.2",
+      "faiss": "1.15.0"
+    }
+  }
+}

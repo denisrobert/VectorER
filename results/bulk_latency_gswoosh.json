@@ -1,0 +1,74 @@
+{
+  "parameters": {
+    "total_records": 10400,
+    "duplicate_pairs_planted": 400,
+    "n_canopies": 256,
+    "overlap": 2,
+    "tau": 0.85,
+    "missing_rate": 0.3,
+    "seed": 42,
+    "embedder": "hashing-384",
+    "algorithm": "G-Swoosh",
+    "swoosh_only": false
+  },
+  "quality": {
+    "total_records": 10400,
+    "duplicate_pairs_planted": 400,
+    "tp": 353,
+    "fp": 0,
+    "fn": 47,
+    "precision": 1.0,
+    "recall": 0.8825,
+    "merge_rate": 0.5261,
+    "n_clusters": 7070,
+    "n_non_singletons": 2141,
+    "largest_cluster": 8,
+    "n_candidate_pairs": 1141570,
+    "n_pairs_evaluated": 794880,
+    "n_pairs_matched": 3330,
+    "timing_seconds": {
+      "parse": 0.0011,
+      "embed": 1.7067,
+      "canopy": 0.8455,
+      "fellegi_sunter": 146.8768,
+      "gswoosh_swoosh": 22.3814,
+      "total_seconds": 171.8115
+    },
+    "total_seconds": 171.8115,
+    "records_per_second": 60.5,
+    "fellegi_sunter_call_stats": {
+      "n_cached": 736586,
+      "n_re_scored": 58294,
+      "n_distinct_records_tested": 58294
+    },
+    "merge_function": "select_representative",
+    "algorithm": "G-Swoosh"
+  },
+  "environment": {
+    "python": "3.13.1",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "cpu": "Intel64 Family 6 Model 140 Stepping 1, GenuineIntel",
+    "threads": 8,
+    "libs": {
+      "numpy": "2.5.2",
+      "faiss": "1.15.0"
+    }
+  },
+  "comparison": {
+    "reference_artifact": "results\\bulk_latency.json",
+    "swoosh_stage_seconds_r_swoosh": 0.0476,
+    "swoosh_stage_seconds_g_swoosh": 22.3814,
+    "swoosh_slowdown_x": 470.2,
+    "n_pairs_evaluated_r_swoosh(approx=pairs)": 1141570,
+    "n_pairs_evaluated_g_swoosh": 794880,
+    "n_fs_rescores_g_swoosh": 58294,
+    "total_seconds_r_swoosh": 154.7862,
+    "total_seconds_g_swoosh": 171.8115,
+    "n_clusters_r_swoosh": 5443,
+    "n_clusters_g_swoosh": 7070,
+    "recall_r_swoosh": 1.0,
+    "recall_g_swoosh": 0.8825,
+    "precision_r_swoosh": 1.0,
+    "precision_g_swoosh": 1.0
+  }
+}

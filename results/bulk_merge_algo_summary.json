@@ -1,0 +1,18 @@
+{
+  "summary": "Bulk ER: merge-function (representative vs union) x algorithm (R-Swoosh transitive closure vs G-Swoosh).",
+  "note": "G-union 10k exceeded 90min timeout; the 4k row is the same-scale control for G-vs-R with union. All runs: same synthetic data seed=42, dup-rate=0.04, tau=0.85, 384-d hashing embedder, overlap=2.",
+  "results": [
+    {"config": "R-Swoosh rep 10k", "records": 10400, "candidate_pairs": 1141570, "fellegi_sunter_s": 152.2, "swoosh_s": 0.0, "total_s": 154.8, "recall": 1.0, "n_clusters": 5443, "re_scored": 0},
+    {"config": "G-Swoosh rep 10k", "records": 10400, "candidate_pairs": 1141570, "fellegi_sunter_s": 146.9, "swoosh_s": 22.4, "total_s": 171.8, "recall": 0.882, "n_clusters": 7070, "re_scored": 58294},
+    {"config": "R-Swoosh union 10k", "records": 10400, "candidate_pairs": 1141570, "fellegi_sunter_s": 145.8, "swoosh_s": 0.1, "total_s": 148.4, "recall": 1.0, "n_clusters": 5443, "re_scored": 0},
+    {"config": "R-Swoosh union 4k", "records": 4160, "candidate_pairs": 378563, "fellegi_sunter_s": 56.0, "swoosh_s": 0.0, "total_s": 57.1, "recall": 1.0, "n_clusters": 3059, "re_scored": 0},
+    {"config": "G-Swoosh rep 4k", "records": 4160, "candidate_pairs": 378563, "fellegi_sunter_s": 60.9, "swoosh_s": 6.4, "total_s": 67.3, "recall": 0.956, "n_clusters": 3275, "re_scored": 14639},
+    {"config": "G-Swoosh union 4k", "records": 4160, "candidate_pairs": 378563, "fellegi_sunter_s": 69.6, "swoosh_s": 399.6, "total_s": 469.2, "recall": 1.0, "n_clusters": 3188, "re_scored": 126118}
+  ],
+  "key_findings": [
+    "Union merge is essentially FREE in the R-Swoosh (transitive-closure) path: R-union 10k = 148.4s vs R-rep 10k = 154.8s (recall 1.0 either way).",
+    "Union merge is ~62x SLOWER in the G-Swoosh path at 4k: swoosh stage 399.6s (union) vs 6.4s (rep). 126k re-scores vs 14.6k, because synthetic union representatives are new dict objects that never hit the one-shot pre-score cache.",
+    "Union + G-Swoosh recovers recall to 1.0 (vs G-rep 0.956 at 4k / 0.882 at 10k): the Union-Class existence lift makes G-Swoosh's re-matching meaningful again.",
+    "R-Swoosh (either merge) remains the pragmatic default: ~150s for 10k with recall 1.0; G-Swoosh rep is 171.8s with recall 0.882; G-Swoosh union is impractical at 10k (timed out > 90min)."
+  ]
+}

@@ -1,0 +1,47 @@
+name: Release
+
+# Triggered by a `v*` tag (e.g. `git tag v0.1.0 && git push --tags`).
+#
+# Builds the sdist + wheel, validates metadata, publishes to PyPI, and
+# creates a GitHub Release for the tag.
+#
+# Before the first release:
+#   1. Configure PyPI trusted publishing for this repository
+#      (https://docs.pypi.org/trusted-publishers/) — owner `denisrobert`,
+#      repository `VectorER`, publishing workflow `release.yml`.
+#   2. Push the tag; the workflow then skips any manual `twine upload`.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write # create the GitHub Release
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # PyPI trusted publishing
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install build tooling
+        run: python -m pip install --upgrade pip build twine
+      - name: Build sdist + wheel
+        run: python -m build
+      - name: Check artifacts
+        run: twine check dist/*
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          generate_release_notes: true

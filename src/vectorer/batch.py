@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from time import perf_counter
-from typing import Any, Optional, Sequence
+from typing import Any, Callable, Optional, Sequence
 
 from .blocking import CanopyIndex, canopy_blocking
 from .clustering import ClusterAssignment, ScoredPair, SwooshClusterer
@@ -94,6 +94,7 @@ class BatchPipeline:
         overlap_m: int = 3,
         canopy_seed: int = 42,
         tau: Optional[float] = None,
+        merge: Callable[[Sequence, Sequence], tuple[Any, int]] = None,
     ) -> None:
         self.embedder = embedder
         self.scorer = scorer
@@ -101,7 +102,10 @@ class BatchPipeline:
         self.overlap_m = int(max(1, overlap_m))
         self.canopy_seed = int(canopy_seed)
         self.tau = float(tau) if tau is not None else scorer.threshold
-        self.swoosh = SwooshClusterer(tau=self.tau)
+        from .clustering import select_representative
+
+        self.merge = merge if merge is not None else select_representative
+        self.swoosh = SwooshClusterer(tau=self.tau, merge=self.merge)
 
     # -- stage hooks --------------------------------------------------------
 
@@ -211,6 +215,7 @@ def build_batch_pipeline(
     overlap_m: int = 3,
     canopy_seed: int = 42,
     tau: float = DEFAULT_THRESHOLD,
+    merge: Callable[[Sequence, Sequence], tuple[Any, int]] = None,
 ) -> BatchPipeline:
     """Convenience constructor: default embedder + scorer from ``comparisons``."""
     from .embeddings import CharacterHashingEmbedding
@@ -227,4 +232,5 @@ def build_batch_pipeline(
         overlap_m=overlap_m,
         canopy_seed=canopy_seed,
         tau=tau,
+        merge=merge,
     )

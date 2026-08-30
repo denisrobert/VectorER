@@ -276,6 +276,25 @@ Key properties:
   what the training sub-mode replaces with data-driven m/u.
 - **Weighted score = single evaluation**: `score_and_weight_batch` returns
   posterior and match weight from one model evaluation.
+- **Union-Class existence lift**: a compared field whose value is a
+  ``set``/``frozenset`` marks a *union of alternatives* (a synthetic master
+  record from :func:`union_merge`).  Such pairs are expanded over their value
+  combinations and the **maximum** posterior returned — the Union-Class match
+  function ``M(r1,r2) = true iff some value pair matches`` (Swoosh Prop. 2.4).
+  List/tuple values are untouched (they are comparison columns for the
+  list-aware comparisons), so union records coexist with vector/tag fields.
+  Combined with the reflexive default (`idempotent=True`) and a set-union
+  merge, this is the ICAR-compatible Union-Class construction.
+- **Reflexive by default** (`idempotent=True` on `FellegiSunterScorer`):
+  content-identical pairs (equal on every compared field) are forced to
+  posterior `1.0`.  This guarantees the *idempotence/reflexivity* property
+  `r ≈ r` of the Swoosh Union-Class ICAR construction.  Without it, a "thin"
+  record (few non-null comparison fields) would score against itself at the
+  prior (all null levels carry no evidence, e.g. 0.0001), failing `r ≈ r`.
+  The check is a cheap O(#comparisons) content-equality test over the compared
+  columns only; it is applied to the posterior in `score`/`score_batch`/
+  `score_pairs` (match weights keep the true self-weight) and can be disabled
+  with `idempotent=False` to recover the raw posterior for identical pairs.
 
 `WeightTable` = compiled specs + per-spec log bayes factors + term-frequency
 tables (value -> relative frequency, built from an optional reference
@@ -321,13 +340,38 @@ Swoosh [13] operates on scored pairs (bulk mode output). Design:
 - **Transitive closure mode** (`SwooshClusterer.cluster`): union the
   above-`tau` pairs. Cheap; the standard "score then cluster" workflow (a
   connected-component-style reduction of the scored graph [14]). Cluster
-  ids are deterministic (minimum position); representatives are the most
-  *complete* records (most non-null fields).
+  ids are deterministic (minimum position); representatives are produced by the
+  configured merge function.
 - **G-Swoosh mode** (`gswoosh`, `cluster_with_merger`): when a merge changes a
   cluster's representative, later pairs are re-tested against the *new*
   representative (with caching of unchanged representative pairs). This is the
   G-Swoosh loop formalized in the Swoosh family of algorithms [13]: match
   tests retried until a pass merges nothing.
+
+**Merge functions.** `merge(records, positions) -> (representative, position)`
+produces the cluster's representative. Three are provided out of the box:
+
+* :func:`select_representative` (default) — the most complete member record
+  (most non-`None` fields). Representative is an *existing* record, so its
+  position is a valid index into ``records``.
+* :func:`union_merge` — a **synthetic master record** whose fields hold the
+  union of every value seen across the matched records (set-valued fields, the
+  Swoosh Union Class). Returns position ``-1``; the representative is not any
+  member.
+* :func:`latest_merge` — a **synthetic master record** whose fields hold the
+  most recent value per attribute, keyed on a ``timestamp_field`` (newest
+  non-`None` value per field). Position anchors to the newest member.
+
+The Swoosh algorithms store the representative **record object** (not just an
+index), so synthetic representatives (``position=-1``) flow through unchanged.
+Because synthetic master records can hold set-valued fields, the scorer
+implements the **Union-Class existence lift**: when a compared field holds a
+``set``/``frozenset``, the pair is expanded over its value combinations and the
+**maximum** posterior (the ``∃`` value pair of the Union Class) is returned
+(see §4). List/tuple field values are *not* union-lifted — they are
+comparison-column values (embedding vectors, tag lists) for the list-aware
+comparisons. Pass a merge function through the batch pipeline via
+``build_batch_pipeline(..., merge=union_merge)``.
 
 `ClusterAssignment` is the portable result: `node_cluster` (pos -> cluster id),
 `clusters` (id -> `Cluster` with members, representative), and counters
@@ -358,7 +402,7 @@ Persistence boundaries: scorer `save/load` (trained comparisons + prior),
 
 | What you want to change | Hook |
 |---|---|
-| Embedding model | implement `EmbeddingModel` (or `SentenceTransformerEmbedding` / `CharacterHashingEmbedding`) and pass `embedder=` |
+| Embedding model | implement `EmbeddingModel` (or `SentenceTransformerEmbedding` / `CharacterHashingEmbedding`) and pass `embedder=` — or wrap an already-instantiated, GPU/quantized model via `SentenceTransformerEmbedding(model=...)`; see `user_guide.md` §0 |
 | ANN index | implement `IndexingStrategy` (`FlatIndex` is the cosine reference) |
 | Blocking geometry | implement a `VectorBlocker`-style blocker or a canopy variant feeding `CanopyIndex` |
 | Comparison set | `register_comparison` / `make_comparison`; custom levels are `test(PairValues, cache) -> mask` |
