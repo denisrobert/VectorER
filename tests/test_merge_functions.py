@@ -29,6 +29,68 @@ def person_scorer(**kwargs):
 
 
 # ---------------------------------------------------------------------------
+# Time-decay wrapper
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def decayed_scorer():
+    from vectorer.comparisons import time_decay_wrapper
+
+    base = make_comparison("jaro_winkler_at_thresholds", col_name="address",
+                           score_threshold_or_thresholds=[0.95, 0.8])
+    decayed = time_decay_wrapper(base, time_col="event_date",
+                                 bands=[(0, 90, 1.0), (90, 365, 0.4), (365, 1e9, 0.05)])
+    return FellegiSunterScorer.from_comparisons([decayed])
+
+
+def test_time_decay_prefers_close_in_time(decayed_scorer):
+    a = {"address": "123 main st toronto", "event_date": "2020-06-01"}
+    close = {"address": "123 main st toronto", "event_date": "2020-05-15"}   # ~17d
+    far = {"address": "123 main st toronto", "event_date": "2018-06-01"}     # ~730d
+    assert decayed_scorer.score(a, close) > decayed_scorer.score(a, far)
+
+
+def test_time_decay_missing_date_is_null(decayed_scorer):
+    a = {"address": "123 main st toronto", "event_date": "2020-06-01"}
+    missing = {"address": "123 main st toronto", "event_date": None}
+    # missing date -> no evidence -> near the base prior, not a huge-gap band
+    assert decayed_scorer.score(a, missing) < 0.01
+
+
+def test_time_decay_different_value_is_rejected(decayed_scorer):
+    a = {"address": "123 main st toronto", "event_date": "2020-06-01"}
+    diff = {"address": "999 elm ave ottawa", "event_date": "2020-05-15"}
+    assert decayed_scorer.score(a, diff) < 0.01
+
+
+def test_time_decay_named_builder():
+    from vectorer.comparisons import time_decayed_comparison_builder
+
+    decayed = time_decayed_comparison_builder("exact_match", col_name="email",
+                                              time_col="ts", bands=[(0, 30, 1.0)])
+    spec = decayed if hasattr(decayed, "levels") else decayed.spec()
+    assert spec.output_column_name == "email_decayed"
+    assert len(spec.levels) >= 2
+
+
+def test_time_decay_wraps_prescore_of_inner():
+    """The wrapper must reuse the inner comparison's prescore (cached arrays)."""
+    from vectorer.comparisons import time_decay_wrapper
+
+    base = make_comparison("jaro_winkler_at_thresholds", col_name="address")
+    decayed = time_decay_wrapper(base, time_col="ts", bands=[(0, 365, 1.0)])
+    scorer = FellegiSunterScorer.from_comparisons([decayed])
+    a = {"address": "1 main st", "ts": "2020-01-01"}
+    b = {"address": "1 main st", "ts": "2020-02-01"}
+    b_far = {"address": "1 main st", "ts": "2015-01-01"}
+    # exact address, close in time -> a near-exact match (single comparison
+    # under default m/u posts ~0.09); far-in-time must be weaker.
+    assert scorer.score(a, b) > scorer.score(a, b_far)
+    assert scorer.score(a, b) == pytest.approx(0.094, abs=1e-2)
+
+
+# ---------------------------------------------------------------------------
 # Merge functions
 # ---------------------------------------------------------------------------
 

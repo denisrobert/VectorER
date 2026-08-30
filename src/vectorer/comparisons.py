@@ -1039,7 +1039,145 @@ _DESCRIPTIONS = {
     "absolute_time_difference_at_thresholds": "Absolute time (timestamp) difference at thresholds.",
     "array_intersect_at_sizes": "Array intersection count at size thresholds.",
     "custom_comparison": "User-supplied levels (declarative conditions or vectorized test callables).",
+    "time_decayed_comparison": "Wraps another comparison, weighting its levels by a time-distance band.",
 }
+
+
+# ---------------------------------------------------------------------------
+# Time-decay wrapper
+# ---------------------------------------------------------------------------
+
+DAY = 86400.0
+
+
+def _time_band(lo_days: float, hi_days: float, lo_s: float, hi_s: float):
+    """Return a ``(PairValues, cache) -> bool mask`` that matches rows whose
+    cached ``tdiff`` (seconds) lies in ``[lo, hi]``."""
+    def band(pv, cache):
+        return np.isfinite(cache["tdiff"]) & (cache["tdiff"] >= lo_s) & (cache["tdiff"] <= hi_s)
+    band.__name__ = f"time_band_{lo_days:g}_{hi_days:g}d"
+    return band
+
+
+def time_decay_wrapper(
+    inner_spec: ComparisonSpec,
+    time_col: str = "event_date",
+    bands: Optional[Sequence[tuple[float, float, float]]] = None,
+    keep_inner_null: bool = False,
+) -> ComparisonSpec:
+    """Wrap ``inner_spec`` so its levels are weighted by a time-distance band.
+
+    Builds a *product* comparison: every non-null level of ``inner_spec`` is
+    crossed with each time band ``(lo_days, hi_days, weight)``.  The level's
+    ``m`` is multiplied by the band's weight and then renormalized so the
+    comparison's m-probabilities sum to 1 (m is the same-entity distribution);
+    ``u`` is left unchanged (it is the chance-level probability, largely
+    time-independent).  This implements time-decayed matching: an exact
+    address close in time gets more evidence than the same address far apart.
+
+    A leading null level fires whenever the timestamp is missing/invalid, so a
+    missing date never reads as "a huge time gap".  With ``keep_inner_null``,
+    the inner comparison's own null level (e.g. a missing address) is also
+    preserved on top of the time-null level.
+    """
+    from . import sim
+
+    # Accept either a ComparisonSpec or a declaration (Comparison / dict).
+    if isinstance(inner_spec, Comparison):
+        inner_spec = inner_spec.spec()
+    elif isinstance(inner_spec, dict):
+        from . import comparison_from_dict
+
+        inner_spec = comparison_from_dict(inner_spec).spec()
+
+    if bands is None:
+        bands = [(0, 30, 1.0), (30, 365, 0.3), (365, 10 ** 9, 0.05)]
+    time_band_secs = [(lo * DAY, hi * DAY, w) for (lo, hi, w) in bands]
+
+    from . import sim
+
+    def prescore(pv):
+        out = {"tdiff": sim.absolute_seconds_difference(pv.left(time_col), pv.right(time_col))}
+        inner_prescore = inner_spec.prescore
+        if inner_prescore is not None:
+            out.update(inner_prescore(pv))
+        return out
+
+    levels = []
+    # 1. Time-null: no valid timestamp -> no evidence.
+    levels.append({
+        "label_for_charts": f"{time_col} missing or invalid",
+        "is_null_level": True,
+        "test": lambda pv, cache: ~np.isfinite(cache["tdiff"]),
+    })
+    # 2. (optional) preserve the inner null (e.g. field missing)
+    if keep_inner_null:
+        for inner_lv in inner_spec.levels:
+            if inner_lv.is_null:
+                levels.append({
+                    "label_for_charts": inner_lv.label,
+                    "is_null_level": True,
+                    "test": inner_lv.test,
+                })
+
+    # 3. Product of inner non-null levels x time bands; m decayed + renormalized.
+    inner_non_null = [lv for lv in inner_spec.levels if not lv.is_null and lv.test is not None]
+    product = []
+    for inner_lv in inner_non_null:
+        for (lo_s, hi_s, w) in time_band_secs:
+            band_test = _time_band(lo_s / DAY, hi_s / DAY, lo_s, hi_s)
+            def combined(pv, cache, inner=inner_lv.test, band=band_test):
+                return inner(pv, cache) & band(pv, cache)
+            product.append({
+                "label_for_charts": f"{inner_lv.label} & t in [{lo_s/DAY:.0f},{hi_s/DAY:.0f}]d",
+                "test": combined,
+                "m_probability": (inner_lv.m if inner_lv.m is not None else 0.0) * w,
+                "u_probability": inner_lv.u,
+            })
+    total_m = sum(entry["m_probability"] for entry in product)
+    if total_m > 0:
+        for entry in product:
+            entry["m_probability"] = entry["m_probability"] / total_m
+
+    levels += product
+
+    # 4. ELSE catch-all (inner's else, or a fresh one).
+    else_lvs = [lv for lv in inner_spec.levels if lv.test is None]
+    if else_lvs:
+        levels.append({"label_for_charts": else_lvs[0].label, "test": None})
+    else:
+        levels.append({"label_for_charts": "All other comparisons", "test": None})
+
+    return build_spec(
+        output_column_name=f"{inner_spec.output_column_name}_decayed",
+        level_dicts=levels,
+        fields=tuple(inner_spec.fields) + (time_col,),
+        prescore=prescore,
+    )
+
+
+def time_decayed_comparison_builder(
+    comparison: Any,
+    time_col: str = "event_date",
+    bands: Optional[Sequence[tuple[float, float, float]]] = None,
+    col_name: Optional[str] = None,
+    keep_inner_null: bool = False,
+) -> ComparisonSpec:
+    """Named-buildable wrapper: wrap ``comparison`` (a spec, Comparison, or a
+    registered comparison name) with time-band decay.  ``time_col`` names the
+    timestamp field present in the scored records; ``col_name`` is forwarded to
+    ``comparison`` when it is a registered name string and requires one."""
+    from . import make_comparison as _make
+
+    if isinstance(comparison, str):
+        kwargs = {"col_name": col_name} if col_name else {}
+        comparison = _make(comparison, **kwargs)
+    return time_decay_wrapper(
+        comparison,
+        time_col=time_col,
+        bands=bands,
+        keep_inner_null=keep_inner_null,
+    )
 
 
 def _register_built_ins() -> None:
@@ -1099,6 +1237,12 @@ def _register_built_ins() -> None:
         custom_comparison_spec,
         fields=(),
         description=_DESCRIPTIONS["custom_comparison"],
+    )
+    R.register(
+        "time_decayed_comparison",
+        time_decayed_comparison_builder,
+        fields=(),
+        description=_DESCRIPTIONS["time_decayed_comparison"],
     )
 
 

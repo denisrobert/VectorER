@@ -36,6 +36,9 @@ REQUIRED_KWARGS = {
     },
     "forename_surname_comparison": {"forename_col_name": "forename", "surname_col_name": "surname"},
     "distance_in_km_at_thresholds": {"lat_col": "lat", "long_col": "long"},
+    "time_decayed_comparison": {
+        "comparison": "exact_match", "col_name": "field", "time_col": "event_date",
+    },
 }
 
 
@@ -49,7 +52,7 @@ def test_catalog_matches_registry():
 
 
 def test_registered_names_cover_the_comparison_family():
-    """All 19 comparison options are available by name."""
+    """All 20 comparison options are available by name."""
     assert set(REGISTRY.names()) == {
         "absolute_date_difference_at_thresholds",
         "absolute_time_difference_at_thresholds",
@@ -70,6 +73,7 @@ def test_registered_names_cover_the_comparison_family():
         "name_comparison",
         "pairwise_string_distance_function_at_thresholds",
         "postcode_comparison",
+        "time_decayed_comparison",
     }
 
 

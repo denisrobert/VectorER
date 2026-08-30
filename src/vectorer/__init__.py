@@ -46,6 +46,8 @@ from .comparisons import (
     make_comparison,
     make_comparisons,
     register_comparison,
+    time_decay_wrapper,
+    time_decayed_comparison_builder,
 )
 from .scoring import DEFAULT_PRIOR, DEFAULT_THRESHOLD, FellegiSunterScorer, WeightTable
 from .classification import (
@@ -112,6 +114,8 @@ __all__ = [
     "available_comparisons",
     "comparison_catalog",
     "register_comparison",
+    "time_decay_wrapper",
+    "time_decayed_comparison_builder",
     # scoring
     "FellegiSunterScorer",
     "WeightTable",
