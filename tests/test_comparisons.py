@@ -1,4 +1,4 @@
-"""Tests for the extensible Fellegi-Sunter comparison set (native, no Splink)."""
+"""Tests for the extensible Fellegi-Sunter comparison set (native, vectorized)."""
 
 import pytest
 
@@ -48,8 +48,8 @@ def test_catalog_matches_registry():
         assert isinstance(entry["fields"], tuple)
 
 
-def test_registered_names_cover_the_splink_comparison_family():
-    """All 19 Splink comparison options are available by name."""
+def test_registered_names_cover_the_comparison_family():
+    """All 19 comparison options are available by name."""
     assert set(REGISTRY.names()) == {
         "absolute_date_difference_at_thresholds",
         "absolute_time_difference_at_thresholds",
@@ -87,7 +87,7 @@ def test_every_registered_comparison_builds(name):
 
 
 def test_every_built_level_has_default_mu():
-    """Splink's default m/u are assigned to every level."""
+    """The default m/u are assigned to every level."""
     comparison = make_comparison(
         "jaro_winkler_at_thresholds", col_name="first_name",
         score_threshold_or_thresholds=[0.9, 0.8, 0.7],
@@ -158,7 +158,7 @@ def test_scalar_and_vectorized_paths_agree():
         assert small_dl[i] == damerau_levenshtein_distance([a], [b])[0]
 
 
-def test_jaro_winkler_parity_with_splink():
+def test_jaro_winkler_canonical_reference_values():
     """The vectorized JW matches the canonical Jaro-Winkler reference values."""
     pairs = [
         ("MARTHA", "MARHTA"),

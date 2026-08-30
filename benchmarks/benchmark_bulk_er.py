@@ -22,7 +22,7 @@ Metrics reported (JSON artifact):
 * quality: Swoosh cluster counts and duplicate-recovery precision/recall
   against the planted duplicate twins;
 * (with ``--compare``) a table of the new scoring throughput against the
-  original project's ``splink_batch_seconds``-based throughput.
+  original project's batch-scoring throughput.
 
 Example::
 
@@ -294,17 +294,20 @@ def main() -> None:
 
     if args.compare:
         reference = json.loads(Path(args.compare).read_text(encoding="utf-8"))
-        # Original bulk numbers: per-query FAISS latency + Splink batch scoring totals.
+        # Original bulk numbers (previous project's artifact): per-query FAISS
+        # latency + batch scoring totals.
         ref = reference.get("strategies", {})
         strategy = ref.get("default", {})
-        ref_score_seconds = strategy.get("splink_batch_seconds")
+        ref_score_seconds = next(
+            (v for k, v in strategy.items() if k.endswith("_batch_seconds")), None
+        )
         ref_queries = len(strategy.get("threshold_metrics", {})) and strategy.get("latency_ms", {}).get("samples", 0)
         ref_pairs = ref_queries * strategy.get("scoring_k", 0)
         ref_pairs_per_second = ref_pairs / ref_score_seconds if ref_score_seconds and ref_pairs else None
         new_pairs_per_second = quality["candidate_pairs_per_second"]
 
         rows = [
-            ("fellegi_sunter_seconds(original splink_batch)",
+            ("fellegi_sunter_seconds(original)",
              round(ref_score_seconds, 1) if ref_score_seconds else None),
             ("scored_pairs(original)", ref_pairs if ref_pairs else None),
             ("pairs_per_second(original)", round(ref_pairs_per_second, 1) if ref_pairs_per_second else None),

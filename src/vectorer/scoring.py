@@ -9,7 +9,7 @@ Two stages consume the comparison set:
     from labelled match/non-match pairs;
   - :meth:`FellegiSunterScorer.fit_em` - unsupervised expectation maximisation
     on a (near-duplicate-bearing) population, mirroring the standard
-    Fellegi-Sunter / Splink parameter-estimation workflow (u estimated by
+    Fellegi-Sunter parameter-estimation workflow (u estimated by
     random sampling of pairs, m and the prior fit by EM over blocking-rule
     candidate pairs).
 
@@ -18,8 +18,8 @@ Two stages consume the comparison set:
 Inference is entirely vectorized: every comparison's levels are evaluated as
 NumPy predicates over whole batches of pairs (see :mod:`vectorer.sim`), each
 pair is assigned its highest-priority level, and the posterior is the sigmoid
-of ``log(prior odds) + sum(log(m/u))`` -- the same algebra Splink's match
-weight uses, expressed without SQL.  "Vectoring" here is over the *batch* (all
+of ``log(prior odds) + sum(log(m/u))`` -- the same match-weight algebra
+expressed without SQL.  "Vectoring" here is over the *batch* (all
 of a query's candidates, or every canopy pair) rather than row-by-row.
 
 By default the match function is *reflexive* (:attr:`idempotent`): a pair whose
@@ -44,7 +44,7 @@ from .comparisons import Comparison, ComparisonSpec, PairValues
 DEFAULT_PRIOR = 0.0001
 DEFAULT_THRESHOLD = 0.85
 
-_LOG_CLIP = 690.0  # ln(1e300), matching Splink's clip on the total bayes factor
+_LOG_CLIP = 690.0  # ln(1e300) clip on the total bayes factor
 
 
 def _values_equal(a: Any, b: Any) -> bool:
@@ -186,7 +186,7 @@ def _build_tf_table(col: str, base_records: Sequence[dict]) -> Optional[dict]:
 class FellegiSunterScorer:
     """Scores pairs by applying (trained) ``m/u`` per comparison level.
 
-    Level assignment uses the same priority order Splink's SQL CASE does, but
+    Level assignment uses an ordered priority (first matching level wins), but
     evaluated as vectorized NumPy predicates over a whole batch of pairs.  Two
     pair inputs are supported:
 
@@ -549,7 +549,7 @@ class FellegiSunterScorer:
         return self._scalar_posterior_batch(left, candidates)
 
     def match_weight_batch(self, left: dict, candidates: Sequence[dict]) -> np.ndarray:
-        """Splink-style ``match_weight = log2(total bayes factor)`` per candidate."""
+        """``match_weight = log2(total bayes factor)`` per candidate."""
         if not candidates:
             return np.asarray([], dtype=np.float64)
         if self._needs_union_pairs([left] * len(candidates), candidates):
@@ -666,7 +666,7 @@ class FellegiSunterScorer:
     ) -> "FellegiSunterScorer":
         """Fit ``m``/``u`` and the base prior via expectation maximisation.
 
-    Mirrors the Splink training workflow without any SQL engine:
+    Native training workflow (no SQL engine):
 
     1. candidate pairs are generated under the blocking rules
        (:meth:`_blocked_pairs`) -- this defines the *training* pair pool;

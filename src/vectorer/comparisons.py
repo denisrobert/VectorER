@@ -1,20 +1,19 @@
 """Extensible Fellegi-Sunter comparison set -- native, fully vectorized.
 
-A full reimplementation of the comparison family that Splink exposes through
-``splink.comparison_library``, with **no Splink / DuckDB / SQL dependency**:
-each comparison is a list of *levels*, and every level is a vectorized NumPy
-predicate evaluated over whole batches of pairs (see :mod:`vectorer.sim`).
-The set is name-keyed through :class:`ComparisonRegistry` and covers the same
-19 comparison options, so a model declared here behaves like the Splink model
-of the same name.
+The comparison set spans the standard attribute-comparison families of record
+linkage, implemented **natively in NumPy with no SQL engine**: each comparison
+is a list of *levels*, and every level is a vectorized NumPy predicate
+evaluated over whole batches of pairs (see :mod:`vectorer.sim`).  The set is
+name-keyed through :class:`ComparisonRegistry` and currently covers 19
+options.
 
 Performance
 -----------
 Each comparison carries an optional *pre-score* step (:attr:`ComparisonSpec.prescore`)
 that computes shared score arrays (e.g. one Jaro-Winkler pass instead of one per
 threshold) once per batch; every level then reads those cached arrays.  Levels
-are ordered by decreasing agreement, exactly as Splink's comparison levels are,
-and the first matching level decides the pair's bayes factor.
+are ordered by decreasing agreement, and the first matching level decides the
+pair's bayes factor.
 """
 
 from __future__ import annotations
@@ -79,7 +78,7 @@ class Level:
     (``None`` marks an *ELSE* catch-all).  ``is_null`` flags the always-BF-1
     null level.  Optional term-frequency adjustment applies when ``tf_column``
     is set (``u`` divided by ``max(tf_l, tf_r) ** tf_weight``, ``tf_min_u``
-    floor), matching Splink exactly.
+    floor), matching the standard term-frequency scheme.
     """
 
     label: str
@@ -110,7 +109,7 @@ class ComparisonSpec:
 
     ``prescore``, when set, computes the score arrays shared by the levels in
     one vectorized pass over the batch.  Level m/u defaults are assigned at
-    build time using Splink's default-value algorithm.
+    build time using the standard default-value algorithm.
     """
 
     output_column_name: str
@@ -144,7 +143,7 @@ class ComparisonSpec:
 
 
 # ---------------------------------------------------------------------------
-# Splink-equivalent default m/u
+# Standard default m/u scheme
 # ---------------------------------------------------------------------------
 
 
@@ -164,7 +163,7 @@ def _default_u_values(num_levels: int) -> list[float]:
 
 
 def apply_default_mu(spec: ComparisonSpec) -> None:
-    """Assign Splink's default m/u to levels lacking explicit probabilities."""
+    """Assign the standard default m/u to levels lacking explicit probabilities."""
     non_null = [lv for lv in spec.levels if not lv.is_null]
     if not non_null or len(spec.levels) <= 1:
         return
@@ -274,7 +273,7 @@ def _distance_prescore(field: str, fn: Callable, key: str = "dist") -> Callable[
 
 
 # ---------------------------------------------------------------------------
-# Comparison factories (one per Splink comparison option)
+# Comparison factories (one per comparison option)
 # ---------------------------------------------------------------------------
 
 _UNITS_TO_SECONDS = {

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vectorer"
-description = "Framework for embedding-and-vector-based entity resolution: incremental (parse -> embed -> vector-block -> Fellegi-Sunter -> classify) and batch (canopy-block -> Fellegi-Sunter -> Swoosh) pipelines with an extensible comparison set covering every Splink comparison option -- implemented natively in NumPy with no SQL engine."
+description = "Framework for embedding-and-vector-based entity resolution: incremental (parse -> embed -> vector-block -> Fellegi-Sunter -> classify) and batch (canopy-block -> Fellegi-Sunter -> Swoosh) pipelines with an extensible comparison set spanning the standard attribute-comparison families of record linkage -- implemented natively in NumPy with no SQL engine."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
@@ -41,8 +41,8 @@ classifiers = [
 ]
 dynamic = ["version"]
 dependencies = [
-    # Native comparison semantics replicate the Splink comparison family
-    # (jaro-winkler, levenshtein, date-difference, ...), so the only hard
+    # Native comparison semantics implement the standard comparison families
+    # (jaro-winkler, levenshtein, date-difference, ...); the only hard
     # dependencies are NumPy for vectorized scoring and FAISS for vector ANN.
     "numpy>=1.24",
     "faiss-cpu>=1.7",

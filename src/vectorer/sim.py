@@ -1,22 +1,21 @@
 """Vectorized string, date and geo similarity/distance functions.
 
-Every function here mirrors the *behaviour* of the comparison primitives that
-Splink lowers to SQL, but is computed natively in NumPy over whole batches of
+Every function here is computed natively in NumPy over whole batches of
 pairs (no SQL engine, no external fuzzy-matching dependency):
 
-========================  ======================  ==============================
-function                  splink primitive       semantics
-========================  ======================  ==============================
-``jaro_similarity``       jaro_similarity        Jaro similarity in [0, 1]
-``jaro_winkler_similarity`` jaro_winkler_similarity  Jaro-Winkler (prefix 0.1, len 4)
-``levenshtein_distance``  levenshtein            edit distance
-``damerau_levenshtein_distance`` damerau_levenshtein  optimal-string-alignment distance
-``jaccard``               jaccard                Jaccard index over list columns
-``cosine_similarity``     array_cosine_similarity  cosine over list columns
-``array_intersect_size``  array_length(list_intersect)  overlap size
-``absolute_seconds_difference`` ABS(EPOCH(...))  abs gap in seconds
-``haversine_km``          duckdb distance        spherical-law-of-cosines km
-========================  ======================  ==============================
+=========================  =========================================================
+function                  semantics
+=========================  =========================================================
+``jaro_similarity``       Jaro similarity in [0, 1]
+``jaro_winkler_similarity``  Jaro-Winkler (prefix 0.1, len 4)
+``levenshtein_distance``  edit distance
+``damerau_levenshtein_distance`` optimal-string-alignment distance
+``jaccard``               Jaccard index over list columns
+``cosine_similarity``     cosine over list columns
+``array_intersect_size``  overlap size
+``absolute_seconds_difference`` abs gap in seconds
+``haversine_km``          spherical-law-of-cosines km
+=========================  =========================================================
 
 All functions accept parallel sequences of scalar values (``None`` = missing)
 and return a ``np.ndarray`` of the same length, so they vectorize the scoring
@@ -33,10 +32,10 @@ from typing import Sequence, Tuple
 
 import numpy as np
 
-#: Earth radius (km) used by the spherical law of cosines, matching Splink.
+#: Earth radius (km) used by the spherical law of cosines.
 EARTH_RADIUS_KM = 6371.0
 
-#: Seconds per month/year used by Splink's date-difference thresholds.
+#: Seconds per month/year used by the date-difference thresholds.
 SECONDS_PER_MONTH = 2629800.0
 SECONDS_PER_YEAR = 31557600.0
 
@@ -54,8 +53,8 @@ def _string_pairs(a: Sequence, b: Sequence) -> Tuple[np.ndarray, np.ndarray, np.
     """Normalize pair values to object arrays of strings plus a "both present" mask.
 
     ``None`` maps to the *empty, absent* sentinel so it can never accidentally
-    equal another value; real empty strings remain present (Splink treats
-    ``''`` as data, not null).
+    equal another value; real empty strings remain present (empty strings
+    are data, not null).
     """
     n = len(a)
     left = np.empty(n, dtype=object)
@@ -201,7 +200,7 @@ def _scalar_osa(a: str, b: str) -> int:
 
 
 def jaro_similarity(a: Sequence, b: Sequence) -> np.ndarray:
-    """Vectorized Jaro similarity in [0, 1] (Splink-compatible)."""
+    """Vectorized Jaro similarity in [0, 1]."""
     a_str, b_str, present = _string_pairs(a, b)
     n = len(a_str)
     out = np.zeros(n, dtype=np.float64)
@@ -290,7 +289,7 @@ def jaro_winkler_similarity(
     prefix_length: int = 4,
     boost_threshold: float = 0.7,
 ) -> np.ndarray:
-    """Vectorized Jaro-Winkler similarity (prefix bonus above 0.7, as Splink)."""
+    """Vectorized Jaro-Winkler similarity (prefix bonus above 0.7)."""
     a_str, b_str, present = _string_pairs(a, b)
     n = len(a_str)
     if n <= _SMALL_BATCH:
@@ -414,15 +413,14 @@ def _batch_dp(
 
 
 def levenshtein_distance(a: Sequence, b: Sequence) -> np.ndarray:
-    """Vectorized Levenshtein distance (Splink ``levenshtein``)."""
+    """Vectorized Levenshtein distance."""
     return _batch_dp(a, b, transpositions=False)
 
 
 def damerau_levenshtein_distance(a: Sequence, b: Sequence) -> np.ndarray:
     """Vectorized Damerau-Levenshtein (OSA) distance.
 
-    Equivalent to DuckDB/Splink's ``damerau_levenshtein``, which is the
-    optimal-string-alignment variant (adjacent transpositions cost one).
+    The optimal-string-alignment variant (adjacent transpositions cost one).
     """
     return _batch_dp(a, b, transpositions=True)
 
@@ -445,7 +443,7 @@ def _coerce_lists(a: Sequence, b: Sequence) -> Tuple[list, list]:
 
 
 def jaccard(a: Sequence, b: Sequence) -> np.ndarray:
-    """Vectorized Jaccard index over list-valued columns (Splink ``jaccard``)."""
+    """Vectorized Jaccard index over list-valued columns."""
     left, right = _coerce_lists(a, b)
     out = np.zeros(len(left), dtype=np.float64)
     for i, (l, r) in enumerate(zip(left, right)):
@@ -465,7 +463,7 @@ def jaccard(a: Sequence, b: Sequence) -> np.ndarray:
 
 
 def cosine_similarity(a: Sequence, b: Sequence) -> np.ndarray:
-    """Cosine similarity over vector-valued columns (Splink array_cosine_similarity)."""
+    """Cosine similarity over vector-valued columns."""
     n = len(a)
     width = 0
     for i in range(n):
@@ -488,7 +486,7 @@ def cosine_similarity(a: Sequence, b: Sequence) -> np.ndarray:
 
 
 def array_intersect_size(a: Sequence, b: Sequence) -> np.ndarray:
-    """Overlap size of list-valued columns (Splink ``array_length(list_intersect)``)."""
+    """Overlap size of list-valued columns."""
     left, right = _coerce_lists(a, b)
     out = np.zeros(len(left), dtype=np.int64)
     for i, (l, r) in enumerate(zip(left, right)):
@@ -503,8 +501,7 @@ def pairwise_max_similarity(
 ) -> np.ndarray:
     """Max cross-pair similarity between two list-valued columns.
 
-    Mirrors Splink's ``PairwiseStringDistanceFunction`` levels, which take the
-    maximum similarity over every (x in ``a``, y in ``b``) combination.
+    Takes the maximum similarity over every (x in ``a``, y in ``b``) combination.
     """
     left, right = _coerce_lists(a, b)
     n = len(left)
@@ -594,9 +591,9 @@ def invalid_date_mask(a: Sequence, b: Sequence, fmt: str | None = None) -> np.nd
 def haversine_km(
     lat_l: Sequence, long_l: Sequence, lat_r: Sequence, long_r: Sequence
 ) -> np.ndarray:
-    """Great-circle distance in km (spherical law of cosines, Splink-compatible).
+    """Great-circle distance in km (spherical law of cosines).
 
-    Clamps the cosine argument to [-1, 1] exactly as Splink's SQL does.
+    Clamps the cosine argument to [-1, 1].
     """
     lat1 = np.radians(np.asarray([float(v) for v in lat_l]))
     lon1 = np.radians(np.asarray([float(v) for v in long_l]))
@@ -617,7 +614,7 @@ def haversine_km(
 
 
 def exact_equals(a: Sequence, b: Sequence) -> np.ndarray:
-    """``a_l = a_r`` as a boolean mask (Splink SQL equality)."""
+    """``a_l = a_r`` as a boolean mask (record equality)."""
     a_str, b_str, present = _string_pairs(a, b)
     return present & (a_str == b_str)
 
@@ -639,7 +636,7 @@ def regexp_extract_group(value, pattern: str) -> str | None:
 
 
 def postcode_parts(postcode: str) -> tuple[str | None, str | None, str | None]:
-    """``(sector, district, area)`` extracted with Splink's postcode patterns."""
+    """``(sector, district, area)`` extracted with the standard postcode patterns."""
     sector = regexp_extract_group(postcode, r"^[A-Za-z]{1,2}[0-9][A-Za-z0-9]? [0-9]")
     district = regexp_extract_group(postcode, r"^[A-Za-z]{1,2}[0-9][A-Za-z0-9]?")
     area = regexp_extract_group(postcode, r"^[A-Za-z]{1,2}")

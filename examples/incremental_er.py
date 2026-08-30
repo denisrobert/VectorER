@@ -10,8 +10,8 @@ Run from the project root:
 
 The example builds a synthetic reference population, resolves a noisy duplicate
 of a known record (should match) and an unrelated record (should be rejected),
-then trains the Fellegi-Sunter parameters on the population via Splink
-expectation maximisation and repeats the resolutions.
+then trains the Fellegi-Sunter parameters on the population via the native
+expectation-maximisation estimator and repeats the resolutions.
 """
 
 from __future__ import annotations
