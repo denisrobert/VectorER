@@ -1,19 +1,23 @@
 """Framework for embedding-and-vector-based entity resolution.
 
-Two pipelines are provided:
+Three pipeline modes are provided:
 
 * :class:`~vectorer.incremental.IncrementalPipeline` - incremental/online ER:
   ``parse -> embed -> vector search blocking (top-k) -> Fellegi-Sunter
   scoring -> classify`` for one incoming record against a reference store;
 * :class:`~vectorer.batch.BatchPipeline` - batch/offline ER:
   ``parse -> embed -> canopy blocking -> Fellegi-Sunter scoring of canopy
-  pairs -> Swoosh clustering`` over a whole dataset.
+  pairs -> Swoosh clustering`` over a whole dataset;
+* :class:`~vectorer.link.RecordLinker` - two-database record linkage:
+  canonical projection of each side -> (directed) index one DB and resolve the
+  other, or (symmetric) cross-DB canopy pairs -> Fellegi-Sunter scoring -> link
+  edges (never merging the two stores).
 
 The Fellegi-Sunter comparison set (:mod:`vectorer.comparisons`) is extensible
-and covers every comparison option currently available in Splink.
+and spans the standard attribute-comparison families of record linkage.
 """
 
-__version__ = "0.1.1"
+__version__ = "0.2.0"
 
 from .records import (
     DictParser,
@@ -64,6 +68,7 @@ from .clustering import (
 )
 from .incremental import IncrementalPipeline, Resolution
 from .batch import BatchPipeline, BatchResult
+from .link import FieldMap, LinkEdge, LinkTable, RecordLinker
 from .pins import EMBEDDING_MODEL_ID, EMBEDDING_MODEL_REVISION
 
 __all__ = [
@@ -133,4 +138,9 @@ __all__ = [
     "Resolution",
     "BatchPipeline",
     "BatchResult",
+    # record linkage (two databases)
+    "RecordLinker",
+    "LinkTable",
+    "LinkEdge",
+    "FieldMap",
 ]

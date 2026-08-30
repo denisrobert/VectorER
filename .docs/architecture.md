@@ -66,20 +66,19 @@ or multi-node tabular workloads.
 
 ## 2. Operation modes
 
-The framework supports two principal operation modes, plus the training
-sub-mode used by both. They share the same comparison set, scorer, similarity
-primitives and classifier, but differ in *when* records appear and *what* the
-output is.
+The framework supports three principal operation modes, plus the training
+sub-mode used by them all. They share the same comparison set, scorer,
+similarity primitives and classifier, but differ in *when* records appear and
+*what* the output is.
 
 ```
-Mode A  Incremental (online)         Mode B  Bulk (offline / batch)
-                                     ┌──────────────────────────────────────┐
- parse -> embed -> vector search     │ parse all records                    │
- blocking (top-k) -> FS score ->     │  -> embed all -> canopy blocking     │
- classify                            │  -> FS score every canopy pair        │
-                                     │  -> Swoosh clustering                 │
-                                     └──────────────────────────────────────┘
-
+Mode A  Incremental (online)      Mode B  Bulk (offline / batch)   Mode C  Link (two DBs)
+                                  ┌─────────────────────────────┐  project canonical fields
+ parse -> embed -> vector search │ parse all records           │  A ─► block vs indexed B ─►
+ blocking (top-k) -> FS score -> │ -> embed all -> canopy      │  FS score top-k ─► link edges
+ classify                        │ -> FS score every canopy    │  (directed), or cross-DB
+                                  │ -> Swoosh clustering        │  canopy pairs (symmetric)
+                                  └─────────────────────────────┘
 Training (either mode): calibrated-from-pairs or EM m/u + prior (=: W → W')
 ```
 
@@ -182,6 +181,40 @@ the base prior, following the Fellegi-Sunter estimation literature [1]:
 Trained weights are serialized (`save`/`load`) as resolved comparison dicts;
 the scorer is immutable-with-respect-to-weights (rebuilding the `WeightTable`
 after training picks the new m/u up).
+
+### 2.4 Link mode (`link.py`)
+
+Used when records come from **two separately-managed databases** — different
+schemas, overlapping compared fields — and must be *linked*, not merged:
+the output is a table of **link edges** `(a_id, b_id, posterior, weight,
+decision)`, and neither database is mixed into the other.  This is the
+merger / cross-enterprise-collaboration use case.
+
+```
+canonical projection (per-DB FieldMap)
+  -> directed:  index B (canonicalized) -> top-k ANN of each A record -> FS
+  -> symmetric: canopy-block canonicalized A+B -> FS score only cross-DB pairs
+  -> classify (tau / possible_low bands) -> LinkTable of edges
+```
+
+Key design:
+
+- **`FieldMap`** maps each DB's own columns onto the canonical compared fields,
+  with optional per-field normalisers, so the two heterogeneous schemas align
+  without renaming the caller's data.
+- **Blocking runs on canonical embeddings** (both sides are projected before
+  embed/compare), so ANN/canopy blocking compares aligned text.  A canonical
+  field absent on one side is simply `None` on that side; FS turns it into a
+  null level (no evidence), so overlap *within* the compared fields is handled
+  for free.
+- **`RecordLinker`** (`link_directed`, `link_symmetric`, `link`) reuses the
+  framework's incremental pipeline, `canopy_blocking`, `score_pairs`,
+  `calibrate_from_pairs`, and `ThresholdClassifier` as orchestrated stages —
+  no new scoring/blocking/clustering internals.
+- **1:1 vs 1:N** is a caller choice (`enforce_11` in directed mode; symmetric
+  emits all above-tau cross-DB pairs).
+- **`LinkTable`** exposes `matches`/`possible_matches` bands, `as_pairs()`,
+  `by_a()`/`by_b()`, and `to_dict()` for export.
 
 ---
 

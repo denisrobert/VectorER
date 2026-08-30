@@ -15,6 +15,7 @@ candidate pairs.
 |---|---|---|
 | **Incremental** | parsing -> embedding -> vector search blocking (top-k) -> FS scoring on the top-k -> classification | online / streaming resolution of one record against a reference store |
 | **Batch** | parsing -> embedding -> canopy blocking on the embedded dataset -> FS scoring of every canopy pair -> Swoosh clustering | offline deduplication / clustering of a whole dataset |
+| **Link** | canonical projection -> (directed) index B + resolve A, or (symmetric) cross-DB canopy pairs -> FS scoring -> link edges | linking **two separately-managed databases** (mergers / cross-enterprise collaborations) |
 
 **Why no SQL?** Comparison levels are naturally a vectorized computation when
 the candidates come from an ANN index or canopy partition rather than a
@@ -124,6 +125,32 @@ result.timing                            # per-stage seconds (parse/embed/canopy
 The batch stage chain is exposed as methods (`embed_all`, `block`, `score`,
 `cluster`) so any stage can be replaced.
 
+### Record Linkage (two databases)
+
+For the merger / cross-enterprise-collaboration case — two **differently-schemed**
+databases linked, not merged — use the Link mode. Declare the canonical
+overlap once, then link:
+
+```python
+from vectorer.link import RecordLinker, FieldMap
+
+linker = RecordLinker(
+    embedder=embedder,
+    comparisons=[make_comparison("email_comparison", col_name="email"), ...],
+    field_maps={                     # canonical field <- each DB's own column
+        "A": FieldMap({"email": "email", "name": "name"}, id_column="cust_id"),
+        "B": FieldMap({"email": "em", "name": "legal_name"}, id_column="partner_id"),
+    },
+    k=20, tau=0.7,
+)
+table = linker.link(records_a, records_b, mode="directed")   # or "symmetric"
+table.matches                    # LinkEdge list: a_id, b_id, probability, decision
+table.as_pairs()                 # [(a_id, b_id), ...]
+```
+
+The output is a **link table**, never a merged store — each database keeps its
+own schema and identity (see `examples/link_two_databases.py`).
+
 ## The comparison set (19 options, native)
 
 `vectorer.comparisons` registers every comparison option under a canonical
@@ -227,6 +254,7 @@ vector-er/
 │   ├── clustering.py       # Swoosh (G-Swoosh), cluster assignment helpers
 │   ├── incremental.py      # IncrementalPipeline
 │   ├── batch.py            # BatchPipeline
+│   ├── link.py             # RecordLinker (two-database record linkage)
 │   └── pins.py             # pinned embedding model id/revision
 ├── .docs/architecture.md   # operation modes, pipeline architecture, design rationale
 ├── .docs/user_guide.md     # hands-on usage: incremental + batch ER, calibration

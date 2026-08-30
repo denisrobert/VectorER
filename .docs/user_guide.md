@@ -107,7 +107,7 @@ comparisons = [
 A comparison object is an ordered list of levels
 (`null -> exact -> fuzzy thresholds -> else`) evaluated over the column or
 columns it names. Each non-null level carries an `m`/`u` pair (default m/u are
-assigned at build time; see `architecture.md` §4, and §5 of this guide for
+assigned at build time; see `architecture.md` §4, and §6 of this guide for
 calibrating them). The mapping between attributes and comparison objects is
 not one-to-one: a comparison may read several columns (`forename_surname_comparison`,
 `distance_in_km_at_thresholds`), and the same attribute may back several
@@ -159,7 +159,7 @@ the posterior `P(match | data)` is the sigmoid of that total. A comparison whose
 level is `null` contributes **no evidence** (weight 0) — this is why a record
 with most fields missing has a low self-score, and why the scorer is reflexive
 by default (see the architecture doc §4). The **match threshold `tau`** on that
-posterior is the operating point you choose in §6.
+posterior is the operating point you choose in §7.
 
 The key practitioner takeaway: **you are not defining hard rules; you are
 choosing which *attributes* you trust and how strongly.** An `exact` match on a
@@ -590,14 +590,108 @@ G-Swoosh path.
 
 ---
 
-## 5. Calibrating the Fellegi-Sunter parameters
+## 5. Record Linkage: linking two databases (mergers / collaboration)
+
+The two modes so far take *one* database and resolve or deduplicate it. For the
+**merger / cross-enterprise collaboration** use case you have *two*
+independently-managed databases with **different schemas** and want to say which
+records refer to the same entity — without ever merging the two stores. That is
+what the **Link** mode (`vectorer.link.RecordLinker`) does: it emits a table of
+**link edges** `(a_id, b_id, posterior, weight, decision)`.
+
+### 5.1 The core idea: canonical field projection
+
+The two schemas differ, but the *compared fields overlap*. You declare that
+overlap once:
+
+```python
+from vectorer.link import RecordLinker, FieldMap
+
+linker = RecordLinker(
+    embedder=embedder,
+    comparisons=[                       # declared on the CANONICAL names
+        make_comparison("jaro_winkler_at_thresholds", col_name="name"),
+        make_comparison("date_of_birth_comparison", col_name="dob"),
+        make_comparison("email_comparison", col_name="email"),
+    ],
+    field_maps={
+        "A": FieldMap({"name": "name", "dob": "birth_date", "email": "email_c"},
+                      id_column="cust_id"),
+        "B": FieldMap({"name": "legal_name", "dob": "dob", "email": "email_p"},
+                      id_column="partner_id"),
+    },
+    k=20, tau=0.7,
+)
+```
+
+`FieldMap({"canonical": "source_col", ...})` projects each side into the
+canonical compared fields; `id_column` names the side's own primary key so the
+edges carry your ids.  A canonical field absent on one side projects to `None`,
+which FS treats as a null level (no evidence) — so overlap *within* the
+compared fields is handled automatically.
+
+### 5.2 Directed link (recommended)
+
+Index database B once, resolve every A record against it:
+
+```python
+table = linker.link_directed(records_a, records_b)
+# or, with a strict one-to-one mapping (each B used at most once)
+table = linker.link_directed(records_a, records_b, enforce_11=True)
+```
+
+### 5.3 Symmetric link
+
+Block A and B together with overlapping canopies, score only the **cross-DB**
+pairs, emit edges — no merge happens:
+
+```python
+table = linker.link_symmetric(records_a, records_b,
+                              n_canopies=256, overlap_m=2)
+```
+
+### 5.4 Reading the result
+
+```python
+table.matches                 # LinkEdge list (decision == "match")
+table.possible_matches        # review-tier band (if possible_low was set)
+table.as_pairs()              # [(a_id, b_id), ...] over the matches
+table.by_a() / table.by_b()   # edges grouped per record
+table.to_dict()               # exportable {a_count, b_count, n_links, links}
+
+for edge in table.matches:
+    print(edge.a_id, edge.b_id, edge.probability, edge.match_weight)
+```
+
+Whether the output is 1:1 or 1:N is your call: directed + `enforce_11` gives
+strict one-to-one; the default (both modes) keeps every cross-DB pair above
+`tau`, i.e. 1:N links.
+
+### 5.5 Practical notes
+
+- **Blocking rides on the overlap**: embeddings are computed on the canonical
+  text of both sides, so semantic tolerance (MiniLM) helps when names differ
+  across DBs; bump `k` for thin overlaps.
+- **Calibrate on cross-DB labels**: `calibrate_from_pairs` already takes
+  `(a_field_l, a_field_r)` pairs with `is_match` — feed it hand-labelled
+  cross-DB pairs (use the canonical field names) instead of relying on default
+  m/u.  The example in §1 used `prior=1e-2` to make the scores usable on small
+  test sets; for production, calibrate the prior too.
+- **Three-tier review**: pass `possible_low=` (e.g. `0.5`) to split automatic
+  links from the "possible match" band you review before the merger decision.
+- See `examples/link_two_databases.py` for a full runnable two-database merge
+  scenario.
+
+---
+
+## 6. Calibrating the Fellegi-Sunter parameters
 
 The default `m/u` values produce reasonable scores out of the box, but for
 production-grade probabilities you should calibrate them — either supervised
 (we have labels) or unsupervised (we have a *duplicate-bearing* population;
-see §5.2 for why that qualifier matters).
+see §6.2 for why that qualifier matters).
 
-### 5.0 Term-frequency adjustments (weighting rare exact matches more)
+### 6.0 Term-frequency adjustments (weighting rare exact matches more)
 
 The base `u` for an exact match assumes that *any* two matching values are
 equally unlikely — but that is wrong for skewed fields. On a "surname" column
@@ -638,7 +732,7 @@ Guidance:
   calibration and persistence; calibrated `u` of the exact level is what gets
   scaled.
 
-### 5.1 Supervised: calibrate from labelled pairs
+### 6.1 Supervised: calibrate from labelled pairs
 
 Construct a list of records with an `is_match` flag (1 = match, 0 = non-match)
 and, for each compared field, both the left and right values:
@@ -669,7 +763,7 @@ pipeline = build_incremental_pipeline(refs, embedder=embedder,
 # few hundred labelled pairs to get sharp, production-useful probabilities.
 ```
 
-### 5.2 Unsupervised: expectation maximisation
+### 6.2 Unsupervised: expectation maximisation
 
 EM needs **duplicate pairs in the training population** — this is not
 optional. The estimator generates candidate pairs under blocking rules,
@@ -709,7 +803,7 @@ merely look alike. Fit on the *raw* input instead:
 
 Avoid fully deduplicated / clean reference sets. If that is all you have,
 either plant duplicates (carefully — the planted duplicates define exactly
-what the fit sees) or use the supervised route (§5.1).
+what the fit sees) or use the supervised route (§6.1).
 
 Sanity-check the fit before trusting it: each comparison's fitted `m` should
 concentrate on the agreement levels (exact, near-exact), and the base prior
@@ -720,7 +814,7 @@ result should be discarded. (The one case that *does* raise a clear error is a
 population that generates zero blocked candidate pairs at all — for example a
 tiny set where no two records share a blocking key.)
 
-### 5.3 Persisting the trained model
+### 6.3 Persisting the trained model
 
 ```python
 scorer_em.save("model.json")                  # comparisons (with m/u) + prior
@@ -733,7 +827,7 @@ inline; `save`/`load` wrap them as JSON.
 
 ---
 
-## 6. Choosing the match threshold (`tau`)
+## 7. Choosing the match threshold (`tau`)
 
 `tau` is the posterior at which a pair is declared a match. It is the
 *operating point* of the Fellegi-Sunter decision rule:
@@ -764,9 +858,9 @@ precision/recall as the previous project's experiments did.
 
 ---
 
-## 7. Practical notes from the original project's use case
+## 8. Practical notes from the original project's use case
 
-### 7.1 Data preparation
+### 8.1 Data preparation
 
 - Lowercase and normalize values before embedding and comparison (suffixes,
   abbreviations, whitespace). The original project serializes each person with
@@ -781,9 +875,9 @@ precision/recall as the previous project's experiments did.
   `make_comparison("exact_match", col_name="surname", term_frequency_adjustments=True)`
   with the reference population passed as `base_records=` to the scorer
   (`FellegiSunterScorer.from_comparisons(comparisons, base_records=refs)`).
-  See §5.0 for how TF adjustment works and when to enable it.
+  See §6.0 for how TF adjustment works and when to enable it.
 
-### 7.2 Blocking recall
+### 8.2 Blocking recall
 
 - Incremental top-k: the original project's `k=20` achieved **99.6%** top-k
   blocking recall on the 50k person index (missing-rate 0.3). Raise `k` to
@@ -791,7 +885,7 @@ precision/recall as the previous project's experiments did.
 - Bulk canopies: overlap `m ≥ 2` recovers near-boundary matches; the 52k-record
   benchmark deduplicated with recall ≥ 0.97 at `overlap_m=1–2`.
 
-### 7.3 What the numbers look like (sanity anchors)
+### 8.3 What the numbers look like (sanity anchors)
 
 On the original 50k-reference incremental use case (MiniLM embeddings,
 k=20):
@@ -808,7 +902,7 @@ recall 0.97–1.0.
 Treat every number as a sanity check, not a promise: your embedding, data
 quality and hardware will move them.
 
-### 7.4 Errors to expect
+### 8.4 Errors to expect
 
 - `calibrate_from_pairs` requires both 1s and 0s in `is_match`.
 - `fit_em` raises if no blocking-rule candidate pairs are generated — add
@@ -821,7 +915,7 @@ quality and hardware will move them.
 
 ---
 
-## 8. End-to-end script skeleton
+## 9. End-to-end script skeleton
 
 Putting the pieces together for the incremental use case:
 

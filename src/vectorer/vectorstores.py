@@ -25,8 +25,13 @@ from typing import Any, Generic, Optional, Sequence, Tuple, TypeVar, Union
 import numpy as np
 
 from .embeddings import EmbeddingModel, Vector
+from .records import to_record_dict
 
 T = TypeVar("T")
+
+# embed_text_of used by InMemoryVectorDatabase.__init__ as the default serializer
+def embed_text_of(record: dict) -> str:
+    return "\n".join(f"{k}: {v}" for k, v in record.items() if v is not None)
 
 
 class IndexingStrategy:
@@ -175,10 +180,17 @@ class InMemoryVectorDatabase(VectorDatabase[T]):
         self,
         embedding: EmbeddingModel,
         index: Optional[IndexingStrategy] = None,
+        embed_text: Optional[Callable[[T], str]] = None,
     ) -> None:
         self._embedding = embedding
         self._index = index or FlatIndex()
         self._records: list[T] = []
+        # Optional per-record text serializer for embedding.  Lets the stored
+        # records keep their native schema while the *embedding/comparison*
+        # text uses a canonical projection (e.g. the Link mode's field maps).
+        self._embed_text = embed_text if embed_text is not None else (
+            lambda r: embed_text_of(to_record_dict(r))
+        )
 
     @property
     def embedding(self) -> EmbeddingModel:
@@ -189,9 +201,7 @@ class InMemoryVectorDatabase(VectorDatabase[T]):
         return self._index
 
     def add(self, records: Sequence[T]) -> None:
-        from .records import to_record_dict
-
-        texts = [embed_text_of(to_record_dict(r)) for r in records]
+        texts = [self._embed_text(r) for r in records]
         self._index.add(self._embedding.embed_many(texts))
         self._records.extend(records)
 
@@ -266,8 +276,3 @@ class InMemoryVectorDatabase(VectorDatabase[T]):
     def vectors(self) -> np.ndarray:
         """Return the stored vectors (used by canopy blocking on the dataset)."""
         return self._index.reconstruct(list(range(len(self))))
-
-
-def embed_text_of(record: dict) -> str:
-    """Serialize a record dict for embedding (schema order, no id column)."""
-    return "\n".join(f"{k}: {v}" for k, v in record.items() if v is not None)
