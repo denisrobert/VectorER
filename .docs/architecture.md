@@ -40,6 +40,8 @@ The package is organised around contracts rather than a monolithic pipeline:
 | `clustering.py` | Swoosh (G-Swoosh), cluster assignments, representatives |
 | `incremental.py` | **Operational mode 1**: streaming/online resolution |
 | `batch.py` | **Operational mode 2**: whole-dataset clustering |
+| `link.py` | **Operational mode 3**: two-database record linkage |
+| `distributed.py` | Additive distributed executor for batch ER (same result as `batch.py`) |
 
 ### 1.1 Why not SQL?
 

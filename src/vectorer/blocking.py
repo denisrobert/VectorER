@@ -155,6 +155,91 @@ class CanopyIndex:
         }
 
 
+def train_canopy_centroids(
+    vectors: Sequence[Sequence[float]],
+    n_clusters: int,
+    seed: int = 42,
+    max_iter: int = 50,
+    nredo: int = 2,
+    sample_size: Optional[int] = 200_000,
+) -> np.ndarray:
+    """Driver-side: fit FAISS k-means and return L2-normalized centroids.
+
+    Only the centroid matrix is shipped to workers; each worker assigns its
+    local records via :func:`assign_canopies`.  When ``vectors`` has more than
+    ``sample_size`` rows (and ``sample_size`` is not ``None``), training runs on
+    a deterministic subsample -- the standard approach for very large inputs.
+    """
+    import faiss
+
+    vectors = np.asarray(vectors, dtype="float32")
+    if sample_size is not None and len(vectors) > int(sample_size):
+        rng = np.random.default_rng(seed)
+        idx = rng.choice(len(vectors), int(sample_size), replace=False)
+        train_vectors = vectors[idx]
+    else:
+        train_vectors = vectors
+    if train_vectors.ndim == 0 or train_vectors.shape[0] == 0:
+        # No vectors: return a placeholder centroid matrix with unknown
+        # dimensionality (0 columns).  Callers with empty data then produce an
+        # empty CanopyIndex through assign_canopies' empty guard.
+        return np.zeros((int(n_clusters), 0), dtype="float32")
+    faiss.normalize_L2(train_vectors)
+
+    kmeans = faiss.Kmeans(
+        int(train_vectors.shape[1]),
+        int(n_clusters),
+        niter=int(max_iter),
+        nredo=int(nredo),
+        seed=int(seed),
+        verbose=False,
+    )
+    kmeans.train(train_vectors)
+    centroids = np.asarray(kmeans.centroids, dtype="float32").copy()
+    faiss.normalize_L2(centroids)
+    return centroids
+
+
+def assign_canopies(
+    vectors: Sequence[Sequence[float]],
+    centroids: np.ndarray,
+    overlap_m: int,
+) -> "CanopyIndex":
+    """Worker-side: assign local ``vectors`` to their top-``overlap_m`` centroids.
+
+    Positions in the returned :class:`CanopyIndex` are **local** to the shard.
+    """
+    import faiss
+
+    vectors = np.asarray(vectors, dtype="float32")
+    if vectors.size == 0:
+        return CanopyIndex(
+            assignments=np.empty((0, int(overlap_m)), dtype=np.int64),
+            canopies=[],
+            n_clusters=int(centroids.shape[0]),
+            overlap_m=int(overlap_m),
+        )
+    faiss.normalize_L2(vectors)
+    centroid_index = faiss.IndexFlatIP(int(vectors.shape[1]))
+    centroid_index.add(centroids)
+
+    kk = min(int(overlap_m), int(centroids.shape[0]))
+    _, assignments = centroid_index.search(vectors, kk)
+
+    canopies: list[set[int]] = [set() for _ in range(int(centroids.shape[0]))]
+    for record_i, row in enumerate(assignments):
+        for centroid in row:
+            if centroid >= 0:
+                canopies[int(centroid)].add(int(record_i))
+
+    return CanopyIndex(
+        assignments=np.asarray(assignments, dtype=np.int64),
+        canopies=canopies,
+        n_clusters=int(centroids.shape[0]),
+        overlap_m=int(overlap_m),
+    )
+
+
 def canopy_blocking(
     vectors: Sequence[Sequence[float]],
     n_clusters: int,
@@ -169,44 +254,8 @@ def canopy_blocking(
     assignment), producing an overlapping canopy around every centroid.
     ``vectors`` are L2-normalized so cosine similarity == inner product.
     """
-    import faiss
-
-    vectors = np.asarray(vectors, dtype="float32")
-    if vectors.size == 0:
-        return CanopyIndex(
-            assignments=np.empty((0, int(overlap_m)), dtype=np.int64),
-            canopies=[],
-            n_clusters=int(n_clusters),
-            overlap_m=int(overlap_m),
-        )
-    faiss.normalize_L2(vectors)
-
-    kmeans = faiss.Kmeans(
-        int(vectors.shape[1]),
-        int(n_clusters),
-        niter=int(max_iter),
-        nredo=int(nredo),
-        seed=int(seed),
-        verbose=False,
+    centroids = train_canopy_centroids(
+        vectors, n_clusters, seed=seed, max_iter=max_iter, nredo=nredo,
+        sample_size=None,
     )
-    kmeans.train(vectors)
-
-    centroid_index = faiss.IndexFlatIP(int(vectors.shape[1]))
-    faiss.normalize_L2(kmeans.centroids)
-    centroid_index.add(kmeans.centroids)
-
-    kk = min(int(overlap_m), int(n_clusters))
-    _, assignments = centroid_index.search(vectors, kk)
-
-    canopies: list[set[int]] = [set() for _ in range(int(n_clusters))]
-    for record_i, row in enumerate(assignments):
-        for centroid in row:
-            if centroid >= 0:
-                canopies[int(centroid)].add(int(record_i))
-
-    return CanopyIndex(
-        assignments=np.asarray(assignments, dtype=np.int64),
-        canopies=canopies,
-        n_clusters=int(n_clusters),
-        overlap_m=int(overlap_m),
-    )
+    return assign_canopies(vectors, centroids, overlap_m)

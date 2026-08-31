@@ -5,7 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.2.2]
+## [0.3.0] - 2026-08-31
+
+### Added
+
+- **Distributed batch ER** (`vectorer.distributed`): `distributed_batch_er`
+  executes the whole batch pipeline across workers (thread or process pools)
+  and produces the **same cluster assignment** as the single-process
+  `BatchPipeline.run`.  Seams added to `blocking.py`:
+  `train_canopy_centroids` / `assign_canopies` (`canopy_blocking` now wraps
+  them, behaviour unchanged); **global-canopy cross-shard pair emission** (so a
+  true match split across shards is not missed); **mask-aligned** parallel FS
+  scoring (`_score_shard` returns mask/probs/weights so filtered below-τ rows
+  never misalign positions); `distributed_closure` (exact connected components
+  over the above-τ edges).  Scorer transport via `to_settings`/`from_settings`;
+  `distributed_batch_er`, `distributed_closure`, `hash_pair` are exported from
+  `vectorer`.
+- **`examples/distributed_batch_er.py`**: a runnable illustration of the
+  distributed batch pipeline with `--n-workers` / `--use-threads` and
+  `--verify` (asserts the distributed cluster assignment equals the
+  single-process `BatchPipeline.run`).
+- **`.docs/distributed_batch_sketch.md`**: the implemented distributed-executor
+  design (invariant, cross-shard canopies, mask alignment, executors,
+  reproducibility, usage).
+- **Tests** (`tests/test_distributed.py`): distributed == single-process for
+  thread/process pools at `n_workers` 1/2/3, `hash_pair` determinism,
+  train/assign == `canopy_blocking`, closure equivalence.
+
+### Changed
+
+- The single-process `BatchPipeline.run` is **untouched**; the distributed
+  executor reproduces its result exactly (verified by tests and the
+  example's `--verify`).
+
+## [0.2.2] - 2026-08-30
 
 ### Added
 
@@ -42,8 +75,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Clean up
- 
+- General cleanup / maintenance release.
+
 ## [0.2.0] - 2026-08-30
 
 ### Added
@@ -105,7 +138,9 @@ Initial public release of `vectorer` on PyPI.
 - **Documentation**: `README.md`, `.docs/architecture.md`, `.docs/user_guide.md`,
   `.source-papers/`.
 
-[Unreleased]: https://github.com/denisrobert/VectorER
+[0.3.0]: https://github.com/denisrobert/VectorER
+[0.2.2]: https://github.com/denisrobert/VectorER
+[0.2.1]: https://github.com/denisrobert/VectorER
 [0.2.0]: https://github.com/denisrobert/VectorER
 [0.1.1]: https://github.com/denisrobert/VectorER
 [0.1.0]: https://github.com/denisrobert/VectorER

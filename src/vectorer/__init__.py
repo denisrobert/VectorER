@@ -17,7 +17,7 @@ The Fellegi-Sunter comparison set (:mod:`vectorer.comparisons`) is extensible
 and spans the standard attribute-comparison families of record linkage.
 """
 
-__version__ = "0.2.2"
+__version__ = "0.3.0"
 
 from .records import (
     DictParser,
@@ -71,6 +71,7 @@ from .clustering import (
 from .incremental import IncrementalPipeline, Resolution
 from .batch import BatchPipeline, BatchResult
 from .link import FieldMap, LinkEdge, LinkTable, RecordLinker
+from .distributed import distributed_batch_er, distributed_closure, hash_pair
 from .pins import EMBEDDING_MODEL_ID, EMBEDDING_MODEL_REVISION
 
 __all__ = [
@@ -147,4 +148,8 @@ __all__ = [
     "LinkTable",
     "LinkEdge",
     "FieldMap",
+    # distributed batch ER
+    "distributed_batch_er",
+    "distributed_closure",
+    "hash_pair",
 ]

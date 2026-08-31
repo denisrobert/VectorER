@@ -151,6 +151,27 @@ table.as_pairs()                 # [(a_id, b_id), ...]
 The output is a **link table**, never a merged store — each database keeps its
 own schema and identity (see `examples/link_two_databases.py`).
 
+### Distributed batch ER
+
+The batch pipeline can be parallelized across workers (thread or process pools)
+and produces the **same cluster assignment** as `BatchPipeline.run`:
+
+```python
+from vectorer import distributed_batch_er
+
+assign = distributed_batch_er(
+    records,
+    scorer=scorer,               # FellegiSunterScorer (shipped to workers)
+    n_canopies=512, overlap_m=2, tau=0.85,
+    n_workers=4, use_threads=False,
+)
+assign.node_cluster             # {record_index: cluster_id} == single-process
+```
+
+Cross-shard canopies and mask-aligned parallel scoring keep the result
+identical; only the FS stage parallelizes the heavy part. See
+`.docs/distributed_batch_sketch.md`.
+
 ## The comparison set (19 options, native)
 
 `vectorer.comparisons` registers every comparison option under a canonical
@@ -255,8 +276,10 @@ vector-er/
 │   ├── incremental.py      # IncrementalPipeline
 │   ├── batch.py            # BatchPipeline
 │   ├── link.py             # RecordLinker (two-database record linkage)
+│   ├── distributed.py      # distributed_batch_er (parallel batch ER, same result)
 │   └── pins.py             # pinned embedding model id/revision
 ├── .docs/architecture.md   # operation modes, pipeline architecture, design rationale
+├── .docs/distributed_batch_sketch.md  # distributed batch ER executor design
 ├── .docs/user_guide.md     # hands-on usage: incremental + batch ER, calibration
 ├── tests/                  # pytest suite (~75 tests, offline)
 ├── benchmarks/             # incremental + bulk (batch) latency/throughput benchmarks
@@ -269,11 +292,15 @@ vector-er/
 ```bash
 python examples/incremental_er.py --n-references 500 --tau 0.85
 python examples/batch_er.py --n-base 500 --dup-rate 0.04 --n-canopies 64 --overlap 2
+python examples/distributed_batch_er.py --n-base 500 --n-workers 4 --verify
+python examples/link_two_databases.py
 ```
 
-Both accept `--embedder sentence` to switch from the deterministic hashing
-embedder to `sentence-transformers/all-MiniLM-L6-v2` (revision-pinned; requires
-the `[embedding]` extra).
+Both `batch_er.py` and `distributed_batch_er.py` accept `--embedder sentence`
+to switch from the deterministic hashing embedder to
+`sentence-transformers/all-MiniLM-L6-v2` (revision-pinned; requires the
+`[embedding]` extra). The distributed example's `--verify` flag runs the
+single-process pipeline and asserts the same cluster assignment.
 
 ## Benchmarks
 
