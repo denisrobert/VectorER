@@ -7,9 +7,10 @@ A framework for **embedding-and-vector-based entity resolution** with two
 composable pipelines and an extensible **Fellegi-Sunter** (FS) comparison set
 spanning 19 options across the standard attribute-comparison families of record
 linkage — implemented **natively in NumPy, with no SQL engine and no external
-linkage dependencies**. It targets workloads that fit on a single machine: one
-process, an in-memory index, and vectorized scoring over whole batches of
-candidate pairs.
+linkage dependencies**. It targets workloads that fit on a single machine: an
+in-memory index, vectorized scoring over whole batches of candidate pairs, and
+(multi-process) parallelization of the batch pipeline across that machine's
+cores — no cross-node / cluster infrastructure.
 
 | Pipeline | Stage chain | Use case |
 |---|---|---|
@@ -169,8 +170,7 @@ assign.node_cluster             # {record_index: cluster_id} == single-process
 ```
 
 Cross-shard canopies and mask-aligned parallel scoring keep the result
-identical; only the FS stage parallelizes the heavy part. See
-`.docs/distributed_batch_sketch.md`.
+identical; only the FS stage parallelizes the heavy part.
 
 ## The comparison set (19 options, native)
 
@@ -279,7 +279,6 @@ vector-er/
 │   ├── distributed.py      # distributed_batch_er (parallel batch ER, same result)
 │   └── pins.py             # pinned embedding model id/revision
 ├── .docs/architecture.md   # operation modes, pipeline architecture, design rationale
-├── .docs/distributed_batch_sketch.md  # distributed batch ER executor design
 ├── .docs/user_guide.md     # hands-on usage: incremental + batch ER, calibration
 ├── tests/                  # pytest suite (~75 tests, offline)
 ├── benchmarks/             # incremental + bulk (batch) latency/throughput benchmarks
@@ -330,9 +329,11 @@ end to end — all offline with the deterministic hashing embedder.
 ## Notes and caveats
 
 * The framework is **single-machine by design**: records and pair data live in
-  process memory, and the vector index is the blocking engine. A distributed /
-  SQL-planner based engine is intentionally out of scope for the current
-  workload target.
+  memory, and the vector index is the blocking engine. The *distributed* batch
+  executor (`vectorer.distributed`) parallelizes across a single machine's
+  cores/processes and reproduces the single-process result exactly; cross-node /
+  cluster scale-out and a distributed SQL planner are intentionally out of scope
+  for the current workload target.
 * Array-based comparisons (`cosine`, `jaccard`, `array_intersect`,
   `pairwise_string_distance`) operate on list-valued columns natively — no
   special column typing or database casts are needed.

@@ -13,8 +13,10 @@ the modules that implement each contract.
 `vector-er` is a framework for entity resolution over dense embeddings. Its
 core design principle: **the vector index is the blocking engine, and the
 Fellegi-Sunter scorer is a vectorized NumPy computation rather than a SQL
-pipeline [1][2].** The intended workloads fit on a single machine: one process,
-one NUMA node, an in-memory index and in-memory record store. Nothing in the
+pipeline [1][2].** The intended workloads fit on a single machine: an in-memory
+index and in-memory record store, optionally parallelized across the machine's
+cores via the distributed batch executor (inter-machine/cluster scale-out is
+out of scope). Nothing in the
 framework assumes a distributed query engine, a SQL planner, or an external
 linkage service — only NumPy for the scoring math and FAISS for approximate
 nearest-neighbour blocking [11] (see
@@ -55,7 +57,8 @@ vectorized NumPy predicate evaluated over the whole batch of candidate pairs at
 once, and the Fellegi-Sunter math is pure array algebra.
 
 The trade-off is consciously scoped: this makes the framework **single-machine
-by design** (all pair data lives in process memory) and places the burden of
+by design** (all pair data lives in this machine's memory, optionally spread
+across its processes by the distributed executor) and places the burden of
 scaling on better blocking rather than on distributing a SQL plan. That is
 intentional for the current workload target; a distributed/SQL-based engine —
 such as [Splink](https://github.com/moj-analytical-services/splink) [19], whose

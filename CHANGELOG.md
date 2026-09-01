@@ -25,9 +25,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   distributed batch pipeline with `--n-workers` / `--use-threads` and
   `--verify` (asserts the distributed cluster assignment equals the
   single-process `BatchPipeline.run`).
-- **`.docs/distributed_batch_sketch.md`**: the implemented distributed-executor
-  design (invariant, cross-shard canopies, mask alignment, executors,
-  reproducibility, usage).
 - **Tests** (`tests/test_distributed.py`): distributed == single-process for
   thread/process pools at `n_workers` 1/2/3, `hash_pair` determinism,
   train/assign == `canopy_blocking`, closure equivalence.
