@@ -157,7 +157,7 @@ The score accumulates the log of the ratio $m/u$ (the *match weight*) per
 comparison plus a base prior (the probability two *random* records match), and
 the posterior $\Pr(\text{match} \mid \text{data})$ is the sigmoid of that total:
 
-$$ P = \sigma\!\left( \log\!\Bigl(\tfrac{p_0}{1-p_0}\Bigr) + \sum_{\text{comparisons}} \log\frac{m_{\text{level}}}{u_{\text{level}}} \right) ,\qquad\ \ \sigma(x)=\frac{1}{1+e^{-x}} $$
+$$ P = \sigma\left( \log\frac{p_0}{1-p_0} + \sum_{\text{assigned}} \log\frac{m}{u} \right), \qquad \sigma(x) = \frac{1}{1+e^{-x}} $$
 
 A comparison whose level is `null` contributes **no evidence** (weight 0) — this
 is why a record with most fields missing has a low self-score, and why the

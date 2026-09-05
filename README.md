@@ -230,7 +230,7 @@ callables, or as the declarative conditions `"ELSE"`, `'"col_l" IS NULL OR
 level per comparison, combines per-level $\log(m/u)$ with the prior odds, and
 derives
 
-$$ P(\text{match}) = \sigma\!\Bigl(\log\tfrac{p_0}{1-p_0} + \sum_{\text{comparisons}} \log\tfrac{m_{\text{level}}}{u_{\text{level}}}\Bigr) $$
+$$ P(\mathrm{match}) = \sigma\left(\log\frac{p_0}{1-p_0} + \sum_{\text{assigned}} \log\frac{m}{u}\right) $$
 
 (vectorized; $\sigma$ is the sigmoid). Training is equally native:
 
