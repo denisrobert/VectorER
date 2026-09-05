@@ -332,7 +332,7 @@ Key properties:
   posterior and match weight from one model evaluation.
 - **Union-Class existence lift**: a compared field whose value is a
   ``set``/``frozenset`` marks a *union of alternatives* (a synthetic master
-  record from :func:`union_merge`).  Such pairs are expanded over their value
+  record from ``union_merge``).  Such pairs are expanded over their value
   combinations and the **maximum** posterior returned — the Union-Class match
   function ``M(r1,r2) = true iff some value pair matches`` (Swoosh Prop. 2.4).
   List/tuple values are untouched (they are comparison columns for the
@@ -404,17 +404,26 @@ Swoosh [13] operates on scored pairs (bulk mode output). Design:
   G-Swoosh loop formalized in the Swoosh family of algorithms [13]: match
   tests retried until a pass merges nothing.
 
+  > **⚠ Expensive.** **G-Swoosh** repeatedly re-runs the Fellegi-Sunter
+  > matcher on merged representatives against the whole candidate pair set until
+  > convergence, which can be dozens of times slower than the default transitive
+  > closure (see the bulk benchmarks: the swoosh stage went from ~0.05 s to
+  > ~22–400 s under G-Swoosh, depending on the merge).  **Use it only when
+  > absolute correctness is required** — e.g. audits or final reconciliation on a
+  > modest dataset — and prefer the default `SwooshClusterer.cluster` /
+  > `BatchPipeline.run` for production workloads.
+
 **Merge functions.** `merge(records, positions) -> (representative, position)`
 produces the cluster's representative. Three are provided out of the box:
 
-* :func:`select_representative` (default) — the most complete member record
+* ``select_representative`` (default) — the most complete member record
   (most non-`None` fields). Representative is an *existing* record, so its
   position is a valid index into ``records``.
-* :func:`union_merge` — a **synthetic master record** whose fields hold the
+* ``union_merge`` — a **synthetic master record** whose fields hold the
   union of every value seen across the matched records (set-valued fields, the
   Swoosh Union Class). Returns position ``-1``; the representative is not any
   member.
-* :func:`latest_merge` — a **synthetic master record** whose fields hold the
+* ``latest_merge`` — a **synthetic master record** whose fields hold the
   most recent value per attribute, keyed on a ``timestamp_field`` (newest
   non-`None` value per field). Position anchors to the newest member.
 

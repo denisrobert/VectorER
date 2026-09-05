@@ -593,7 +593,16 @@ id_to_cluster = result.cluster_ids_of(schema)   # {"r000": 5, ...}
 **Swoosh re-matching (optional).** By default `run` does the transitive closure
 over above-`tau` pairs (standard *score then cluster*). If you want full
 G-Swoosh behaviour — re-matching merged representatives against the candidate
-pair set — use the pair-driven entry points. `scorer_match` receives the two
+pair set — use the pair-driven entry points below.
+
+> **⚠ Expensive.** G-Swoosh re-runs the Fellegi-Sunter matcher on merged
+> representatives against the candidate pair set until convergence — dozens of
+> times slower than the default closure (the bulk benchmarks show the swoosh
+> stage jumping from ~0.05 s to ~22–400 s). Use it only when **absolute
+> correctness is required** (audits, final reconciliation, or non-ICAR custom
+> merges); prefer the default closure for production.
+
+`scorer_match` receives the two
 **representative records** (not positions), which may be synthetic master
 records; `merge` defaults to `select_representative` but can be `union_merge`
 or `latest_merge`:
