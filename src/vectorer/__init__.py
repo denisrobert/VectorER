@@ -17,7 +17,7 @@ The Fellegi-Sunter comparison set (:mod:`vectorer.comparisons`) is extensible
 and spans the standard attribute-comparison families of record linkage.
 """
 
-__version__ = "0.4.0"
+__version__ = "0.4.1"
 
 from .records import (
     DictParser,
@@ -35,6 +35,7 @@ from .embeddings import (
     SentenceTransformerEmbedding,
 )
 from .vectorstores import FlatIndex, InMemoryVectorDatabase, IndexingStrategy, VectorDatabase
+from .vectorstore_adapters import QdrantVectorDatabase
 from .blocking import BlockedCandidate, CanopyIndex, VectorBlocker, canopy_blocking
 from .comparisons import (
     Comparison,
@@ -113,6 +114,7 @@ __all__ = [
     "FlatIndex",
     "VectorDatabase",
     "InMemoryVectorDatabase",
+    "QdrantVectorDatabase",
     # blocking
     "BlockedCandidate",
     "VectorBlocker",

@@ -40,6 +40,9 @@ batch of candidate pairs at once, and the Fellegi-Sunter math (level assignment
   pip install -e ".[docs]"
   sphinx-build -b html docs docs/_build/html
   ```
+- **[`.docs/distributed_er.md`](.docs/distributed_er.md)** — multi-node
+  operation: what shards/streams across machines, what stays single-process by
+  design (with caveats), and how to run it (Ray cluster + external vector DB).
 
 ## Installation
 

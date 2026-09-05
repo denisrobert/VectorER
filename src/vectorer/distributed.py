@@ -359,6 +359,31 @@ def build_global_tf_tables(shard_record_iterables, fields) -> dict:
     return tables
 
 
+def gather_canopy_sample(
+    vector_shards: Sequence[np.ndarray],
+    sample_size: int,
+    seed: int = 42,
+) -> np.ndarray:
+    """Gather a **cross-machine sample** of vectors for canopy-centroid training.
+
+    Instead of materializing the full vector matrix on one node, each shard
+    contributes a proportional, deterministic random slice, and only the sample
+    is concatenated.  Uses a seeded RNG so the sample is reproducible and
+    identical regardless of shard boundaries.
+    """
+    total = sum(len(v) for v in vector_shards)
+    if total <= int(sample_size):
+        return np.vstack(vector_shards)
+    rng = np.random.default_rng(seed)
+    per_shard = int(sample_size) // max(1, len(vector_shards))
+    slices = []
+    for v in vector_shards:
+        take = max(1, min(per_shard, len(v)))
+        idx = rng.choice(len(v), take, replace=False)
+        slices.append(np.asarray(v)[idx])
+    return np.vstack(slices)
+
+
 # ---------------------------------------------------------------------------
 # Distributed batch ER
 # ---------------------------------------------------------------------------
@@ -423,12 +448,16 @@ def distributed_batch_er(
     vector_shards = [d[1] for d in shard_data]
 
     # --- stage 2: canopy train (driver) + assign (workers) ----------------
-    # To be identical to single-process, train on the FULL vector matrix unless
-    # sample_size is deliberately set (then we approximate).
-    all_vectors = np.vstack(vector_shards)
-    centroids = train_canopy_centroids(
-        all_vectors, n_canopies, seed=seed, sample_size=sample_size,
-    )
+    # Train on a cross-machine SAMPLE (Milestone C) so the driver never
+    # materializes the full vector matrix.  sample_size=None trains on the full
+    # matrix (needed for bit-identical centroids on small data); otherwise the
+    # sample is reproducible across shardings via gather_canopy_sample.
+    if sample_size is None or not vector_shards:
+        train_vectors = np.vstack(vector_shards) if vector_shards else np.zeros((0, 0))
+        centroids = train_canopy_centroids(train_vectors, n_canopies, seed=seed, sample_size=None)
+    else:
+        sampled = gather_canopy_sample(vector_shards, sample_size=int(sample_size), seed=seed)
+        centroids = train_canopy_centroids(sampled, n_canopies, seed=seed, sample_size=None)
 
     def _run_assign():
         if executor is not None:
@@ -535,7 +564,11 @@ def distributed_batch_er(
     edges = [e for lst in scored_lists for e in lst]
 
     # --- stage 5: distributed closure over the above-tau edges -------------
-    return distributed_closure(edges, n, n_workers)
+    # Use the weighted reduce (Milestones B-C): the driver no longer holds all
+    # edges in one union-find; each worker union-finds its partition and the
+    # merge is exact/multi-machine.  With n_workers == 1 this degenerates to
+    # the single union-find.
+    return distributed_closure_reduce(edges, n, n_workers=n_workers, executor=executor)
 
 
 # ---------------------------------------------------------------------------

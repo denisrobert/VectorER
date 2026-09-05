@@ -184,3 +184,33 @@ def test_create_executor_kinds(dataset):
     assert list(ex.map(lambda x: x + 1, [1, 2, 3])) == [2, 3, 4]
     with pytest.raises(ValueError):
         create_executor("unknown")
+
+
+def test_gather_canopy_sample_deterministic_and_bounded(dataset):
+    import numpy as np
+    from vectorer.distributed import gather_canopy_sample
+
+    vec_shards = [np.random.RandomState(i).randn(40, 8).astype("float32") for i in range(4)]
+    full = np.vstack(vec_shards)
+    # sample_size < total -> bounded, reproducible
+    sample1 = gather_canopy_sample(vec_shards, sample_size=60, seed=7)
+    sample2 = gather_canopy_sample(vec_shards, sample_size=60, seed=7)
+    assert len(sample1) <= 60
+    assert np.array_equal(sample1, sample2)
+    # sample_size >= total -> returns the full stack
+    sample_full = gather_canopy_sample(vec_shards, sample_size=len(full), seed=7)
+    assert np.array_equal(sample_full, full)
+
+
+def test_build_global_tf_tables_merges_shards(dataset):
+    from vectorer.distributed import build_global_tf_tables
+
+    shards = [
+        [{"surname": "smith", "city": "toronto"}, {"surname": "smith", "city": None}],
+        [{"surname": "jones", "city": "toronto"}, {"surname": None, "city": "ottawa"}],
+]
+    tables = build_global_tf_tables(shards, ["surname", "city"])
+    assert tables["surname"]["smith"] == pytest.approx(2 / 3, abs=1e-9)
+    assert tables["surname"]["jones"] == pytest.approx(1 / 3, abs=1e-9)
+    assert tables["city"]["toronto"] == pytest.approx(2 / 3, abs=1e-9)
+    assert tables["city"]["ottawa"] == pytest.approx(1 / 3, abs=1e-9)

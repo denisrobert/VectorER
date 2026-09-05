@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-09-05
+
+### Added
+
+**Completes the v0.4.0 distribution plan (Milestones C, D, E).**
+
+- **Milestone C — canopy-sample gather + global TF wired in**:
+  - `gather_canopy_sample` — memory-bounded, deterministic cross-machine
+    sample for k-means centroid training, wired into `distributed_batch_er`
+    (trains on the sample; `sample_size=None` = full matrix for bit-identical
+    small-data results).
+  - `distributed_batch_er` now routes the Swoosh closure through
+    `distributed_closure_reduce` (multi-machine, exact) instead of a single
+    union-find.
+- **Milestone D — external distributed vector DB**:
+  - `QdrantVectorDatabase` (`vectorstore_adapters.py`) — a `VectorDatabase`
+    backed by a distributed Qdrant collection: `add`/`update`/`delete`/
+    `record_at`/`len`/`index.search` (HNSW cosine), embedding model stays
+    local.  Handles both Qdrant `query_points` (≥1.15) and legacy `search`.
+  - New optional `[qdrant]` extra; exported as `vectorer.QdrantVectorDatabase`.
+  - Usable directly with `IncrementalPipeline.from_store` for the multi-node
+    online serving path.
+- **Milestone E — operations doc**:
+  - `.docs/distributed_er.md` — multi-node operation guide (what shards /
+    streams, what stays single-process by design with caveats, how to run a Ray
+    cluster and a Qdrant-backed incremental store, building-block reference).
+  - `.docs/architecture.md` §7.2 "Multi-node operation" added; single-node-only
+    claims removed across README + architecture docs.
+- **Tests**: gather/TF/sample (2), Qdrant adapter (3).
+
 ## [0.4.0] - 2026-09-05
 
 ### Added
@@ -216,6 +246,7 @@ Initial public release of `vectorer` on PyPI.
 - **Documentation**: `README.md`, `.docs/architecture.md`, `.docs/user_guide.md`,
   `.source-papers/`.
 
+[0.4.1]: https://github.com/denisrobert/VectorER
 [0.4.0]: https://github.com/denisrobert/VectorER
 [0.3.1]: https://github.com/denisrobert/VectorER
 [0.3.0]: https://github.com/denisrobert/VectorER
