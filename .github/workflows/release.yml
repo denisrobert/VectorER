@@ -40,8 +40,29 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist
+      - name: Extract release notes from CHANGELOG.md
+        id: notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"           # e.g. v0.4.1 -> 0.4.1
+          file=CHANGELOG.md
+          # Grab the section between "## [<version>]" and the next "## [".
+          notes="$(awk -v v="^## \\[$version\\]" '$0 ~ v {f=1; next} /^## \[/ {if (f) exit} f' "$file")"
+          if [ -z "${notes// /}" ]; then
+            echo "No CHANGELOG entry for $version; falling back to generated notes."
+            echo "body=" >> "$GITHUB_OUTPUT"
+            echo "fallback=true" >> "$GITHUB_OUTPUT"
+          else
+            # Write to a file for softprops/action-gh-release's body_path,
+            # trimming leading/trailing blank lines.
+            printf '%s\n' "$notes" | sed '/./,$!d' | tac | sed '/./,$!d' | tac > release_notes.md
+            echo "body_path=release_notes.md" >> "$GITHUB_OUTPUT"
+            echo "fallback=false" >> "$GITHUB_OUTPUT"
+          fi
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           name: ${{ github.ref_name }}
-          generate_release_notes: true
+          body_path: "${{ steps.notes.outputs.body_path }}"
+          generate_release_notes: ${{ steps.notes.outputs.fallback == 'true' }}
