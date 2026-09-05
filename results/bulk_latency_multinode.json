@@ -1,0 +1,38 @@
+{
+  "parameters": {
+    "total_records": 4160,
+    "duplicate_pairs_planted": 160,
+    "n_canopies": 32,
+    "overlap": 2,
+    "tau": 0.85,
+    "n_workers": 2,
+    "ray_address": "auto",
+    "seed": 42,
+    "mode": "single-host simulation of 2-node Ray cluster"
+  },
+  "candidate_pairs": 1305806,
+  "single_process_seconds": 148.3401,
+  "distributed_seconds": 122.6045,
+  "speedup": 1.21,
+  "candidate_pairs_per_second": 10650.6,
+  "quality": {
+    "records": 4160,
+    "clusters": 502,
+    "singletons": 58,
+    "merge_rate": 0.9861,
+    "twins_merged": 160,
+    "n_duplicate_twins": 160
+  },
+  "distributed_equals_single": true,
+  "environment": {
+    "python": "3.13.1",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "cpu": "Intel64 Family 6 Model 140 Stepping 1, GenuineIntel",
+    "threads": 8,
+    "libs": {
+      "numpy": "2.5.2",
+      "faiss": "1.15.0",
+      "ray": "2.58.0"
+    }
+  }
+}

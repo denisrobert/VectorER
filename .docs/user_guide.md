@@ -530,8 +530,9 @@ When to use it:
 
 - **Incremental / online service at large scale**: HNSW/IVF sharded ANN replaces
   the flat FAISS scan and gives horizontal scaling + persistence.
-- **Complementary to the intra-machine batch executor**: `distributed_batch_er`
-  parallelizes whole-dataset dedup across one machine's cores; the external-DB
+- **Complementary to the multi-node batch executor**: `distributed_batch_er` /
+  `distributed_score_and_reduce` shards whole-dataset dedup across machines
+  (Ray) — see `examples/multi_node_distributed_er.py`; the external-DB
   route is for huge *reference stores* in online mode.  They can coexist.
 
 Caveats: preserve cosine semantics (L2-normalize or use the DB's cosine metric

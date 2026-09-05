@@ -5,6 +5,46 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-09-05
+
+### Added
+
+- **Multi-node distribution (v0.4.0 plan, Milestones A-B)** in
+  `vectorer.distributed`, all additive on top of the single-machine pipelines
+  (which stay byte-for-byte unchanged):
+  - **`Executor` backend abstraction**: `create_executor("process"|"thread"|
+    "ray")` and a minimal optional `RayExecutor`; the orchestration is
+    backend-agnostic.
+  - **`distributed_score_pairs`** — the FS scoring *map* across workers: pairs
+    owned by a deterministic balanced hash, each worker rebuilds the scorer
+    from its serialized settings and returns only the above-`tau` rows (only
+    those cross the wire).  Optional `pair_positions=` returns proper
+    `ScoredPair`s.
+  - **`distributed_score_and_reduce`** — composes the scoring map with the
+    closure reduce for a single, streaming score-then-cluster call.
+  - **`streaming_distributed_closure`** — transitive closure over an
+    *iterator of edge chunks* (streaming reduce, bounded memory).
+  - **`distributed_closure_reduce`** — multi-machine exact connected
+    components: per-worker local union-find + a shared-node merge into
+    min-position ids, bit-for-bit identical to the single-process closure
+    (verified at `n_workers` 1/2/3 and with a thread executor).
+  - **TF pre-reduce** (`merge_tf_counters`, `build_global_tf_tables`) so
+    per-value term frequencies stay globally consistent across machines.
+  - `examples/distributed_streaming_er.py` with `--verify`.
+  - `examples/multi_node_distributed_er.py` — runs the same streaming
+    score-and-cluster flow across a **Ray cluster**: pass the head node
+    `ip:port`, or `--ray-address auto` to start/join a local instance (same
+    code path as a real multi-node setup).  `--verify` asserts the cluster
+    assignment is identical to single-process.  `RayExecutor` starts a local
+    Ray instance when no `RAY_ADDRESS`/address is configured.
+  - `benchmarks/benchmark_bulk_er_multinode.py` — bulk ER on a **simulated
+    2-node Ray cluster** (single host, `n_workers` actors), timing single vs
+    distributed and asserting identical assignments (`--verify`).
+- The caveat map from the plan is honoured: G-Swoosh, per-query FS (incremental/
+  link-directed) and single-machine-canopy training remain single-process by
+  design; the transitive-closure mode and the store-backed incremental path
+  are the distributed surfaces.
+
 ## [0.3.1] - 2026-09-05
 
 ### Added
@@ -176,6 +216,7 @@ Initial public release of `vectorer` on PyPI.
 - **Documentation**: `README.md`, `.docs/architecture.md`, `.docs/user_guide.md`,
   `.source-papers/`.
 
+[0.4.0]: https://github.com/denisrobert/VectorER
 [0.3.1]: https://github.com/denisrobert/VectorER
 [0.3.0]: https://github.com/denisrobert/VectorER
 [0.2.2]: https://github.com/denisrobert/VectorER

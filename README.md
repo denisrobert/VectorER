@@ -7,10 +7,11 @@ A framework for **embedding-and-vector-based entity resolution** with two
 composable pipelines and an extensible **Fellegi-Sunter** (FS) comparison set
 spanning 19 options across the standard attribute-comparison families of record
 linkage — implemented **natively in NumPy, with no SQL engine and no external
-linkage dependencies**. It targets workloads that fit on a single machine: an
-in-memory index, vectorized scoring over whole batches of candidate pairs, and
-(multi-process) parallelization of the batch pipeline across that machine's
-cores — no cross-node / cluster infrastructure.
+linkage dependencies**. It runs on anything from a single laptop to a
+**multi-node cluster**: the batch pipeline's expensive stages (FS scoring,
+candidate blocking, Swoosh closure) shard and stream across machines via an
+optional Ray backend, and the incremental reference store scales horizontally
+through external distributed vector databases.
 
 | Pipeline | Stage chain | Use case |
 |---|---|---|
@@ -315,13 +316,18 @@ single-process pipeline and asserts the same cluster assignment.
 ```bash
 python benchmarks/benchmark_incremental_er.py --n-references 50000 --query-count 30 --breakdown
 python benchmarks/benchmark_bulk_er.py --n-records 50000 --dup-rate 0.04 --overlap 1
+# multi-node (simulated 2-node Ray cluster on one host, or a real cluster via --ray-address)
+python benchmarks/benchmark_bulk_er_multinode.py --n-records 8000 --n-workers 2 --verify
 ```
 
 The incremental benchmark reproduces the original project's cold per-query
 latency methodology (50k reference index, k=20, close-variant queries,
 percentiles + phase breakdown); the bulk benchmark measures whole-dataset
-throughput across canopy -> FS -> Swoosh with duplicate-recovery metrics. See
-`results/*.json`.
+throughput across canopy -> FS -> Swoosh with duplicate-recovery metrics.  The
+multi-node bulk benchmark times the same workload with a Ray executor
+(`n-workers` actors simulate the cluster nodes; pass `--ray-address ip:port`
+for actual machines) and asserts the distributed assignment equals
+single-process.  See `results/*.json`.
 
 ## Tests
 
@@ -337,12 +343,16 @@ end to end — all offline with the deterministic hashing embedder.
 
 ## Notes and caveats
 
-* The framework is **single-machine by design**: records and pair data live in
-  memory, and the vector index is the blocking engine. The *distributed* batch
-  executor (`vectorer.distributed`) parallelizes across a single machine's
-  cores/processes and reproduces the single-process result exactly; cross-node /
-  cluster scale-out and a distributed SQL planner are intentionally out of scope
-  for the current workload target.
+* The framework is **multi-node capable** via the optional Ray backend
+  (`vectorer.distributed`) and external distributed vector databases.  What
+  shards/streams across machines: parsing, embedding, canopy assignment,
+  Fellegi-Sunter scoring (pair-hash owned, only above-`tau` edges cross the
+  wire), and the Swoosh closure (per-machine union-find + a shared-node
+  merge).  What stays single-process **by design** (surfaced as caveats, not
+  forced): G-Swoosh (`gswoosh`/`cluster_with_merger` — the sequential merge
+  order is globally significant; use the transitive-closure mode), per-query
+  FS scoring (k is tiny — distribute the store instead), and the k-means
+  canopy-train step (one global sample gather, cheap).
 * Array-based comparisons (`cosine`, `jaccard`, `array_intersect`,
   `pairwise_string_distance`) operate on list-valued columns natively — no
   special column typing or database casts are needed.

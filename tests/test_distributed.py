@@ -1,16 +1,22 @@
-"""Tests for the distributed batch ER executor.
-
-The key contract: ``distributed_batch_er`` must produce the SAME cluster
-assignment as the single-process ``BatchPipeline.run`` for the same input.
-"""
+"""Tests for the distributed batch ER executor and the streaming/multi-machine
+parts (Milestones A-B of the v0.4.0 distribution plan)."""
 
 import numpy as np
 import pytest
 
 from vectorer.batch import BatchPipeline
 from vectorer.blocking import assign_canopies, train_canopy_centroids
+from vectorer.clustering import SwooshClusterer
 from vectorer.comparisons import make_comparison
-from vectorer.distributed import distributed_batch_er, distributed_closure, hash_pair
+from vectorer.distributed import (
+    create_executor,
+    distributed_batch_er,
+    distributed_closure,
+    distributed_closure_reduce,
+    distributed_score_pairs,
+    hash_pair,
+    streaming_distributed_closure,
+)
 from vectorer.scoring import FellegiSunterScorer
 
 
@@ -117,3 +123,64 @@ def test_distributed_closure_equals_local_closure(dataset, scorer):
     local = SwooshClusterer(tau=0.85).cluster(dataset, edges)
     dist = distributed_closure(edges, len(dataset), records=dataset)
     assert local.node_cluster == dist.node_cluster
+
+def _above_tau_edges(dataset, scorer):
+    from vectorer.embeddings import CharacterHashingEmbedding
+
+    single = BatchPipeline(
+        embedder=CharacterHashingEmbedding(dimension=384),
+        scorer=scorer, n_canopies=3, overlap_m=2, canopy_seed=42, tau=0.85,
+    ).run(dataset)
+    return [p for p in single.scored_pairs if p.probability >= 0.85]
+
+
+def test_distributed_score_pairs_matches_single(dataset, scorer):
+    edges = _above_tau_edges(dataset, scorer)
+    for nw in (1, 2, 3):
+        rows = distributed_score_pairs(
+            scorer,
+            [dataset[p.left_position] for p in edges],
+            [dataset[p.right_position] for p in edges],
+            tau=0.85, n_workers=nw,
+        )
+        assert len(rows) == len(edges)
+        indexes = {i for i, _, _ in rows}
+        assert len(indexes) == len(edges)
+
+
+def test_streaming_distributed_closure_matches_single(dataset, scorer):
+    edges = _above_tau_edges(dataset, scorer)
+    single = SwooshClusterer(tau=0.85).cluster(dataset, edges)
+    streamed = streaming_distributed_closure(
+        [edges[:4], edges[4:8], edges[8:]], len(dataset), records=dataset,
+    )
+    assert streamed.node_cluster == single.node_cluster
+
+
+@pytest.mark.parametrize("n_workers", [1, 2, 3])
+def test_distributed_closure_reduce_matches_single(dataset, scorer, n_workers):
+    edges = _above_tau_edges(dataset, scorer)
+    single = SwooshClusterer(tau=0.85).cluster(dataset, edges)
+    reduced = distributed_closure_reduce(
+        edges, len(dataset), n_workers=n_workers, records=dataset,
+    )
+    assert reduced.node_cluster == single.node_cluster
+
+
+def test_distributed_closure_reduce_with_thread_executor(dataset, scorer):
+    from concurrent.futures import ThreadPoolExecutor
+
+    edges = _above_tau_edges(dataset, scorer)
+    single = SwooshClusterer(tau=0.85).cluster(dataset, edges)
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        reduced = distributed_closure_reduce(
+            edges, len(dataset), n_workers=3, executor=ex, records=dataset,
+        )
+    assert reduced.node_cluster == single.node_cluster
+
+
+def test_create_executor_kinds(dataset):
+    ex = create_executor("thread", n_workers=2)
+    assert list(ex.map(lambda x: x + 1, [1, 2, 3])) == [2, 3, 4]
+    with pytest.raises(ValueError):
+        create_executor("unknown")

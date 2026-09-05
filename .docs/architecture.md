@@ -13,10 +13,11 @@ the modules that implement each contract.
 `vector-er` is a framework for entity resolution over dense embeddings. Its
 core design principle: **the vector index is the blocking engine, and the
 Fellegi-Sunter scorer is a vectorized NumPy computation rather than a SQL
-pipeline [1][2].** The intended workloads fit on a single machine: an in-memory
-index and in-memory record store, optionally parallelized across the machine's
-cores via the distributed batch executor (inter-machine/cluster scale-out is
-out of scope). Nothing in the
+pipeline [1][2].** The framework runs on anything from a single laptop to a
+multi-node cluster: an in-memory index and record store on one host, or the
+expense stages (parsing, embedding, canopy assignment, Fellegi-Sunter scoring,
+Swoosh closure) sharded and streamed across machines via an optional Ray
+backend. Nothing in the
 framework assumes a distributed query engine, a SQL planner, or an external
 linkage service — only NumPy for the scoring math and FAISS for approximate
 nearest-neighbour blocking [11] (see
@@ -56,16 +57,19 @@ SQL engine the vector path does not use. Instead each comparison level is a
 vectorized NumPy predicate evaluated over the whole batch of candidate pairs at
 once, and the Fellegi-Sunter math is pure array algebra.
 
-The trade-off is consciously scoped: this makes the framework **single-machine
-by design** (all pair data lives in this machine's memory, optionally spread
-across its processes by the distributed executor) and places the burden of
-scaling on better blocking rather than on distributing a SQL plan. That is
-intentional for the current workload target; a distributed/SQL-based engine —
-such as [Splink](https://github.com/moj-analytical-services/splink) [19], whose
+The trade-off is consciously scoped: **no SQL engine is used anywhere** —
+the framework scales by *sharding what can be sharded and streaming reduce
+operations where possible* (record/vector shards, pair-hash-owned scoring with
+only above-`tau` edges crossing the wire, per-machine union-find with a
+shared-node merge), rather than by distributing a SQL plan. That is
+intentional: `vectorer.distributed` (with an optional Ray backend) makes this
+multi-node while sharing the exact same kernels as the single-process
+pipelines, so results are identical regardless of where the workers run.  A
+distributed/SQL-based engine — such as
+[Splink](https://github.com/moj-analytical-services/splink) [19], whose
 candidate generation, comparison-level evaluation and parameter-estimation are
 realized as queries translatable to DuckDB, Spark, SQLite or Athena — is a
-different architecture with different trade-offs, better suited to very large
-or multi-node tabular workloads.
+different architecture with different trade-offs.
 
 ---
 
@@ -506,9 +510,10 @@ so `index.search` returns positions and `record_at(position)` becomes an id
 fetch.  External DBs typically provide HNSW/IVF indexes and sharding, which
 replace the in-memory FAISS flat scan (the real ANN bottleneck as N grows).
 
-**When to choose this vs the intra-machine distributed executor:** the batch
-distributed executor (`distributed_batch_er`) parallelizes across one machine's
-cores and is the answer for *whole-dataset* dedup/clustering.  The external-DB
+**When to choose this vs the distributed batch executor:** the distributed
+batch executor (`distributed_batch_er` / `distributed_score_and_reduce`)
+shards the *whole-dataset* dedup/clustering work across machines (via Ray when
+you have a cluster).  The external-DB
 route is the answer for *huge reference stores* in incremental/online service
 mode — horizontal ANN scaling and persistence without touching the pipeline.
 The two are orthogonal and can coexist.
@@ -518,6 +523,43 @@ the DB's cosine metric to keep scores comparable with the local `FlatIndex`);
 be mindful of payload-size limits and serialization cost when storing records as
 payloads; and account for eventual-consistency / freshness if ingestion is
 asynchronous (`ingest_novel` expects immediate visibility).
+
+### 7.2 Multi-node operation
+
+The framework distributes the batch pipeline's workload **across machines**
+while keeping results identical to single-process.  The execution layer is
+backend-agnostic: `create_executor("process"|"thread"|"ray")` picks the
+transport, and `RayExecutor` runs the same orchestration over a Ray cluster.
+
+**What shards / streams across machines:**
+
+- **Parsing + embedding** — record shards are handled per machine.
+- **Canopy assignment** — centroids are trained once (on a sampled gather),
+  each machine assigns its own records against them.
+- **Fellegi-Sunter scoring** — candidate pairs are owned by a deterministic
+  balanced pair-hash; each worker rebuilds the scorer from serialized settings
+  and returns only above-`tau` edges (a streaming map — only those edges cross
+  the wire).
+- **Swoosh closure** — per-machine union-find, then a shared-node merge into
+  deterministic min-position ids (streaming reduce, bounded memory).
+- **Term-frequency pre-reduce** — per-value frequencies are summed globally so
+  TF weights are identical on every machine.
+
+**What stays single-process by design (caveats, not forced):**
+
+- **G-Swoosh** (`gswoosh` / `cluster_with_merger`) — the merge order globally
+  affects representatives, so it cannot be sharded correctly.  Use the
+  transitive-closure mode for distributed runs; the closure shards exactly.
+- **Per-query FS scoring** (incremental / link-directed) — `k` is small, so
+  distributing it adds latency, not scale.  Distribute the *store* instead
+  (§7.1).
+- **k-means canopy training** — one global sample gather; cheap.
+
+**Running it:** see `examples/multi_node_distributed_er.py` — start a Ray
+cluster (`ray start --head`, then `ray start --address=<head>:6379` on each
+worker), and run with `--ray-address <head-ip>:6379` (`--ray-address auto`
+starts/joins a local instance, exercising the same code path on one host).
+`--verify` asserts the distributed assignment equals single-process.
 
 ---
 
