@@ -303,7 +303,7 @@ PairValues(left[field]: obj ndarray, right[field]: obj ndarray)
 
 The per-pair math, in Jax Math:
 
-$$ \mathrm{logBF}_i = \begin{cases} \log\left(\frac{m_i}{u_i}\right) & \text{if level } i \text{ is an agreement level} \\ 0 & \text{if level } i \text{ is the null level} \end{cases} $$
+$$ \mathrm{logBF} = \log\left(\frac{m_i}{u_i}\right) \ \text{for the assigned agreement level } i, \qquad \mathrm{logBF} = 0 \ \text{for the null level} $$
 
 $$ \log\mathrm{total} = \log\left(\frac{p_0}{1-p_0}\right) + \sum_{\text{assigned}} \mathrm{logBF}, \qquad L = \mathrm{clip}\left(\log\mathrm{total},\ -\ln 10^{300},\ \ln 10^{300}\right) $$
 

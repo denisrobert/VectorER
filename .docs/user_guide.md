@@ -155,7 +155,8 @@ two probabilities you can reason about like this:
 
 The score accumulates the log of the ratio $m/u$ (the *match weight*) per
 comparison plus a base prior (the probability two *random* records match), and
-the posterior $\Pr(\text{match} \mid \text{data})$ is the sigmoid of that total:
+the posterior (probability of a match given the data) is the sigmoid of that
+total:
 
 $$ P = \sigma\left( \log\frac{p_0}{1-p_0} + \sum_{\text{assigned}} \log\frac{m}{u} \right), \qquad \sigma(x) = \frac{1}{1+e^{-x}} $$
 
@@ -753,7 +754,7 @@ is strong evidence the records are the same person. **Term-frequency (TF)
 adjustment** rescales the exact-match evidence by how *rare* the matched value
 is in the reference population: the effective $u$ of the exact level becomes
 
-$$ u_{\text{eff}} = \frac{u_{\text{exact}}}{\max\!\bigl(\mathrm{tf}_{\text{left}},\, \mathrm{tf}_{\text{right}}\bigr)^{w}} $$
+$$ u_{\mathrm{eff}} = \frac{u_{\mathrm{exact}}}{\max\left(\mathrm{tf}_{\mathrm{left}},\ \mathrm{tf}_{\mathrm{right}}\right)^{w}} $$
 
 so a rare exact match posts a much larger posterior than a common one ($w$ is
 the TF weight, with a $\mathrm{tf}_{\min}$ floor).
