@@ -68,6 +68,10 @@ html_static_path = ["_static"]
 html_title = "vector-er"
 html_short_title = "vector-er"
 
+# Branding: the vector-er logo (glyph "ER" with a vector macron overline).
+html_logo = "_static/logo.svg"
+html_favicon = "_static/logo.svg"
+
 # autosummary
 autosummary_generate = True
 

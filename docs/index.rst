@@ -1,6 +1,11 @@
 vector-er
 =========
 
+.. image:: _static/logo.svg
+   :alt: vector-er logo (the glyph ER with a vector macron)
+   :width: 120px
+   :align: center
+
 :mod:`vectorer` is a framework for **embedding-and-vector-based entity
 resolution**: incremental (streaming) resolution, batch deduplication, and
 two-database record linkage, built on a vectorized Fellegi-Sunter scoring
