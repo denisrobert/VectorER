@@ -8,6 +8,11 @@ server.
 
 import pytest
 
+qdrant_client = pytest.importorskip(
+    "qdrant_client",
+    reason="qdrant_client not installed (install via `pip install -e .[qdrant]`)",
+)
+
 from vectorer.embeddings import CharacterHashingEmbedding
 from vectorer.vectorstore_adapters import QdrantVectorDatabase
 
