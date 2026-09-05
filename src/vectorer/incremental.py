@@ -69,6 +69,36 @@ class IncrementalPipeline:
     k: int = 20
     tau: Optional[float] = None
 
+    @classmethod
+    def from_store(
+        cls,
+        vector_database: VectorDatabase,
+        scorer: FellegiSunterScorer,
+        *,
+        k: int = 20,
+        tau: Optional[float] = None,
+    ) -> "IncrementalPipeline":
+        """Serve incremental queries against an **already-embedded** store.
+
+        This is the production modality: the reference population was embedded
+        into the vector store separately (previously) — e.g. built once,
+        persisted with :meth:`InMemoryVectorDatabase.save`, and reloaded with
+        :meth:`InMemoryVectorDatabase.load`, or sourced from an external
+        distributed vector DB — and only the *queries* are new.  Unlike
+        :func:`build_incremental_pipeline`, this does **not** embed the
+        reference records again; it wires the store straight into the pipeline.
+
+        Conveniently mirrors constructing ``IncrementalPipeline(vector_database=,
+        scorer=, k=, tau=)`` directly, but names the intent and is the
+        discoverable shortcut for the serving use case.
+        """
+        return cls(
+            vector_database=vector_database,
+            scorer=scorer,
+            k=k,
+            tau=tau,
+        )
+
     def __post_init__(self) -> None:
         self.blocker = VectorBlocker(self.vector_database, k=self.k)
         tau = self.tau if self.tau is not None else self.scorer.threshold
@@ -227,27 +257,47 @@ class IncrementalPipeline:
 
 
 def build_incremental_pipeline(
-    records: Sequence[Any],
+    records: Optional[Sequence[Any]] = None,
     *,
     embedder: Optional[EmbeddingModel] = None,
     scorer: Optional[FellegiSunterScorer] = None,
     comparisons: Optional[Sequence[Any]] = None,
+    vector_database: Optional[VectorDatabase] = None,
     k: int = 20,
     tau: float = DEFAULT_THRESHOLD,
 ) -> IncrementalPipeline:
-    """Convenience constructor from a reference population.
+    """Convenience constructor supporting both population modalities.
 
-    Builds an :class:`InMemoryVectorDatabase` over ``records`` (using a
-    deterministic hashing embedder when none is supplied), then a scorer from
-    the supplied ``comparisons`` (declared ``Comparison`` objects) if no
-    calibrated ``scorer`` is given.
+    Two ways to configure the reference store:
+
+    * **From raw records** (illustration / small setups): pass ``records`` —
+      they are embedded and added to a new :class:`InMemoryVectorDatabase`.
+      ``embedder`` (default deterministic hashing) is used for that embedding.
+    * **From an already-embedded store** (production / serving): pass
+      ``vector_database=`` — a pre-built store that already carries its own
+      embedder, e.g. one loaded from disk or from a distributed vector DB.
+      The records are **not** re-embedded; only queries are embedded at
+      ``resolve`` time.
+
+    The scorer is built from ``comparisons`` (declared ``Comparison`` objects)
+    unless a calibrated ``scorer`` is given.
     """
     from .embeddings import CharacterHashingEmbedding
     from .vectorstores import FlatIndex, InMemoryVectorDatabase
 
-    embedding = embedder or CharacterHashingEmbedding()
-    database = InMemoryVectorDatabase(embedding, FlatIndex(normalize=True))
-    database.add(records)
+    if vector_database is not None:
+        if records is not None or embedder is not None:
+            raise ValueError(
+                "supply either records (+ optional embedder) OR a pre-built "
+                "vector_database, not both"
+            )
+        database = vector_database
+    else:
+        if records is None:
+            raise ValueError("supply records= or vector_database=")
+        embedding = embedder or CharacterHashingEmbedding()
+        database = InMemoryVectorDatabase(embedding, FlatIndex(normalize=True))
+        database.add(records)
     if scorer is None:
         if not comparisons:
             raise ValueError("supply comparisons or a calibrated scorer")

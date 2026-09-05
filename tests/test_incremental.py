@@ -5,6 +5,66 @@ import pytest
 from vectorer.embeddings import CharacterHashingEmbedding
 from vectorer.incremental import IncrementalPipeline, build_incremental_pipeline
 from vectorer.classification import Decision
+from vectorer.vectorstores import FlatIndex, InMemoryVectorDatabase
+
+
+def test_from_store_serves_pre_embedded_persisted_store(tmp_path, person_duplicate_dataset, base_comparisons):
+    """IncrementalPipeline.from_store is a thin alias for the serving path."""
+    from vectorer.scoring import FellegiSunterScorer
+
+    embedding = CharacterHashingEmbedding(dimension=384)
+    db = InMemoryVectorDatabase(embedding, FlatIndex())
+    db.add(person_duplicate_dataset[:5])
+    db.save(tmp_path)
+    db2 = InMemoryVectorDatabase.load(tmp_path, embedding=embedding)
+    scorer = FellegiSunterScorer.from_comparisons(base_comparisons)
+    pipeline = IncrementalPipeline.from_store(db2, scorer, k=10, tau=0.85)
+    assert len(pipeline.vector_database) == 5
+    result = pipeline.resolve(person_duplicate_dataset[5])
+    assert result.decision is Decision.MATCH
+
+
+def test_build_from_pre_embedded_vector_database(person_duplicate_dataset, base_comparisons):
+    """build_incremental_pipeline(vector_database=...) serves a pre-embedded store."""
+    import tempfile
+
+    from vectorer.scoring import FellegiSunterScorer
+    from vectorer.vectorstores import InMemoryVectorDatabase, FlatIndex
+
+    embedding = CharacterHashingEmbedding(dimension=384)
+    db = InMemoryVectorDatabase(embedding, FlatIndex())
+    db.add(person_duplicate_dataset[:5])
+    pipeline = build_incremental_pipeline(
+        vector_database=db, comparisons=base_comparisons, k=10, tau=0.85,
+    )
+    assert pipeline.vector_database is db  # no re-embed of a copy
+    result = pipeline.resolve(person_duplicate_dataset[5])
+    assert result.decision is Decision.MATCH
+
+
+def test_build_rejects_both_or_neither_source(base_comparisons):
+    from vectorer.embeddings import CharacterHashingEmbedding
+    from vectorer.vectorstores import FlatIndex, InMemoryVectorDatabase
+
+    db = InMemoryVectorDatabase(CharacterHashingEmbedding(64), FlatIndex())
+    db.add([{"first_name": "a", "last_name": "b", "date_of_birth": "2000-01-01", "email": None, "address": None}])
+    with pytest.raises(ValueError, match="either records"):
+        build_incremental_pipeline([{"first_name": "x"}], vector_database=db, comparisons=base_comparisons)
+    with pytest.raises(ValueError, match="supply records="):
+        build_incremental_pipeline(comparisons=base_comparisons)
+
+
+def test_build_from_persisted_then_reloaded_store(tmp_path, person_duplicate_dataset, base_comparisons):
+    """Full serving path: embed once, persist, reload, build from the store."""
+    embedding = CharacterHashingEmbedding(dimension=384)
+    db = InMemoryVectorDatabase(embedding, FlatIndex())
+    db.add(person_duplicate_dataset[:5])
+    db.save(tmp_path)
+    db2 = InMemoryVectorDatabase.load(tmp_path, embedding=embedding)
+    pipeline = build_incremental_pipeline(vector_database=db2, comparisons=base_comparisons)
+    assert len(pipeline.vector_database) == 5
+    result = pipeline.resolve(person_duplicate_dataset[5])
+    assert result.decision is Decision.MATCH
 
 
 def test_build_and_resolve_exact_duplicate(person_duplicate_dataset, base_comparisons):

@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`build_incremental_pipeline(vector_database=...)`** — the convenience
+  constructor now also accepts a **pre-built vector store** (with its own
+  embedder) for the production *serving* modality: the reference population was
+  embedded separately (previously) and loaded (e.g. from a persisted or
+  distributed vector DB), so it is not re-embedded.  Providing both/or neither
+  of `records=` and `vector_database=` raises a clear error.
+- **`IncrementalPipeline.from_store`** — a discoverable alias for the
+  production *serving* modality: build a pipeline from an already-embedded,
+  loaded vector store without re-embedding the reference records.
 - **`import_splink_scorer`** (`vectorer.scoring`): import `m/u` (and
   term-frequency weights) trained by Splink onto a matching native comparison
   set, for use in batch, Link, or incremental modes.  Matches Splink

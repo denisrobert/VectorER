@@ -486,7 +486,8 @@ The **incremental** pipeline's only contact with storage is the
 records, `embedding` to embed queries, and `add`/`update`/`delete` for
 ingestion.  That makes an **external distributed vector database a drop-in
 replacement** — implement `VectorDatabase` (and optionally `IndexingStrategy`)
-against Qdrant, Milvus, Pinecone, Weaviate, Elasticsearch, ChromaDB, etc., and
+against Qdrant, Milvus, Pinecone, Weaviate, Elasticsearch, ChromaDB, etc.
+*(contributions welcome)*, and
 the incremental pipeline scales horizontally across nodes with **no pipeline
 changes**.
 

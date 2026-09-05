@@ -284,8 +284,10 @@ ships three; pick by what your users need to consume:
 
 The merge function also fixes your **domination order** (see §2.5). If your
 custom merge does not preserve all values (e.g. averages a price, or keeps only
-the longest string), the combination is not ICAR and you should cluster with
-G-Swoosh, not rely on transitive-closure approximations blindly.
+the longest string), the combination is **not likely to be ICAR** (special
+cases aside, such as a monotonic timestamp that justifies discarding older
+values) — so you should cluster with G-Swoosh, not rely on transitive-closure
+approximations blindly.
 
 **Writing your own.** Any callable with the same signature as the built-ins
 works wherever a merge is accepted:
@@ -331,24 +333,39 @@ The contract:
   full G-Swoosh re-matching.
 
 Keep the caveats above in mind: if the merge **discards** values (chooses one
-winner per field, picks the longest string), it is not ICAR — use G-Swoosh
-rather than trusting the closure path, and expect re-match behaviour to be
-merge-specific.
+winner per field, picks the longest string), it is **not likely to be ICAR** —
+although it *can* be in special cases (e.g. a monotonically increasing
+timestamp field decides which values to keep — `latest_merge`).  When you are
+not sure and want exactness, use G-Swoosh rather than trusting the closure path, and expect
+re-match behaviour to be merge-specific.
 
 ### 2.5 Domination in this framework
 
-Swoosh domination says "record $r_1$ is dominated by $r_2$" if $r_2$ can stand in
-for $r_1$ in every future match — formally
+**Intuitive definition.**  Once a cluster of records has been merged into one
+representative, that representative becomes the cluster's *stand-in* for all
+future comparisons.  We say a record $r_1$ is **dominated by** $r_2$ when $r_2$
+can safely take $r_1$'s place in **every** comparison that $r_1$ could still
+participate in — that is, for any new record $r'$ that would have matched
+$r_1$, the representative $r_2$ matches $r'$ too:
+
+$$ \text{for every possible } r':\quad r_1 \approx r' \implies r_2 \approx r' $$
+
+If domination holds, comparing the *representative* against a new record tells
+you everything comparing any *member* against it would — so the dominated
+members can be dropped, and only the representative needs to keep being matched.
+The formal Swoosh definition is *merge domination*:
 
 $$ r_1 \preceq r_2 \iff r_1 \approx r_2 \ \text{ and } \ \mu(r_1, r_2) = r_2 $$
 
-(merge *domination*). It matters because a dominated record can be dropped,
-shrinking the candidate set. The framework does **not** take a separate
-domination oracle; the domination order is an *emergent consequence of the
-merge function you pick*:
+i.e. $r_1$ matches $r_2$ (so they belong together) and merging them leaves $r_2$
+as the representative.  This is what lets Swoosh discard dominated records and
+shrink the candidate set while still producing the same final clusters.
+
+The framework does **not** take a separate domination oracle; the domination
+order is an *emergent consequence of the merge function you pick*:
 
 - **`select_representative`**: after a merge, the non-representative members
-  are dominated by the representative (the representative *is* `μ(r1,r2)`).
+  are dominated by the representative (the representative *is* $\mu(r_1, r_2)$).
 - **`union_merge`**: every member is dominated by the union master (the master
   contains all their values), so **all** values are preserved — the strongest,
   cleanest domination; it is exactly the Swoosh "Union Class" where domination
@@ -426,9 +443,36 @@ r.embedding                # the query's embedding vector
 -> FS scoring of the top-k -> classify. A query is a match if any candidate's
 posterior `>= tau`.
 
-### 3.3 Persisting the reference store
+### 3.3 Persisting the reference store (the serving modality)
 
-Embedding 50k records is the expensive, one-off step. Persist it so a new
+**Two modalities, one entry point.** `build_incremental_pipeline` accepts
+**either** the raw ``records`` (embeds them into a new store — good for
+illustration and small/one-off setups) **or** a pre-built ``vector_database=``
+(the production *serving* case, where the population was embedded separately,
+previously):
+
+```python
+from vectorer.incremental import build_incremental_pipeline
+from vectorer.vectorstores import InMemoryVectorDatabase
+
+# Modality 1 — embed raw records (illustration / small):
+pipeline = build_incremental_pipeline(records, comparisons=comparisons, ...)
+
+# Modality 2 — serve against an already-embedded store (production):
+# the population was embedded earlier, e.g. after a Splink pre-dedupe, then
+# persisted to / loaded from a (possibly distributed) vector DB.
+pipeline = build_incremental_pipeline(
+    vector_database=loaded_store,        # carries its own embedder already
+    comparisons=comparisons, k=20, tau=0.85,
+)
+```
+
+In modality 2 the reference records are **not** re-embedded — only queries are
+embedded at ``resolve()`` time.  ``IncrementalPipeline.from_store(store,
+scorer, ...)`` is exactly the same serving path, written as a named, explicit
+classmethod on the pipeline.
+
+Embedding 50k records is the expensive, one-off step; persist it so a new
 process resolves without re-embedding:
 
 ```python
@@ -457,7 +501,8 @@ The incremental pipeline talks to its reference store exclusively through the
 memory — great up to a few million records, but a flat scan becomes the
 bottleneck as N grows.  To scale horizontally, implement `VectorDatabase` (and
 optionally `IndexingStrategy`) against an **external distributed vector DB**
-such as Qdrant, Milvus, Pinecone, Weaviate, or Elasticsearch:
+such as Qdrant, Milvus, Pinecone, Weaviate, or Elasticsearch *(contributions
+welcome)*:
 
 ```python
 from vectorer.incremental import IncrementalPipeline
