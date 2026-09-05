@@ -1,0 +1,4 @@
+# Read the Docs build requirements.
+# Keep in sync with the `[docs]` extra in pyproject.toml.
+sphinx>=7.2
+sphinx-rtd-theme>=2.0

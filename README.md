@@ -33,6 +33,12 @@ batch of candidate pairs at once, and the Fellegi-Sunter math (level assignment
   both pipelines end to end: comparison selection, reference-store persistence,
   ingestion modes, batch clustering, calibration, threshold choice, and
   production notes built around the incremental person-resolution use case.
+- **API reference (`docs/`)** — Sphinx/ReadTheDocs pages. Build locally with:
+
+  ```bash
+  pip install -e ".[docs]"
+  sphinx-build -b html docs docs/_build/html
+  ```
 
 ## Installation
 

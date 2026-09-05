@@ -15,6 +15,9 @@ venv/
 .ruff_cache/
 .kilo/
 
+# Sphinx docs build output
+docs/_build/
+
 # Artifacts produced by examples / demos
 examples/data/
 examples/output/

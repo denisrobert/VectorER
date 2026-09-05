@@ -3,19 +3,30 @@
 Every function here is computed natively in NumPy over whole batches of
 pairs (no SQL engine, no external fuzzy-matching dependency):
 
-=========================  =========================================================
-function                  semantics
-=========================  =========================================================
-``jaro_similarity``       Jaro similarity in [0, 1]
-``jaro_winkler_similarity``  Jaro-Winkler (prefix 0.1, len 4)
-``levenshtein_distance``  edit distance
-``damerau_levenshtein_distance`` optimal-string-alignment distance
-``jaccard``               Jaccard index over list columns
-``cosine_similarity``     cosine over list columns
-``array_intersect_size``  overlap size
-``absolute_seconds_difference`` abs gap in seconds
-``haversine_km``          spherical-law-of-cosines km
-=========================  =========================================================
+.. list-table::
+   :widths: 30 70
+   :header-rows: 1
+
+   * - function
+     - semantics
+   * - ``jaro_similarity``
+     - Jaro similarity in [0, 1]
+   * - ``jaro_winkler_similarity``
+     - Jaro-Winkler (prefix 0.1, len 4)
+   * - ``levenshtein_distance``
+     - edit distance
+   * - ``damerau_levenshtein_distance``
+     - optimal-string-alignment distance
+   * - ``jaccard``
+     - Jaccard index over list columns
+   * - ``cosine_similarity``
+     - cosine over list columns
+   * - ``array_intersect_size``
+     - overlap size
+   * - ``absolute_seconds_difference``
+     - abs gap in seconds
+   * - ``haversine_km``
+     - spherical-law-of-cosines km
 
 All functions accept parallel sequences of scalar values (``None`` = missing)
 and return a ``np.ndarray`` of the same length, so they vectorize the scoring

@@ -63,6 +63,10 @@ dev = [
 benchmark = [
     "tqdm>=4.66",
 ]
+docs = [
+    "sphinx>=7.2",
+    "sphinx-rtd-theme>=2.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/denisrobert/VectorER"

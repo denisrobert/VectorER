@@ -5,13 +5,13 @@ The single-process ``BatchPipeline.run`` is NOT touched; this module produces
 the *same* cluster assignment (given the same data, geometry and scorer) by
 executing the same stages across workers:
 
-    parse/embed      -> shard map
-    canopy train     -> driver (sampled) + worker local assignment
-    candidate pairs  -> emit, dedupe, own-each-by-pair-hash
-    Fellegi-Sunter   -> parallel map over the owned pairs (only above-tau edges
-                        cross the wire)
-    Swoosh closure   -> distributed connected components (exact) over the
-                        above-tau edges
+- parse/embed: shard map
+- canopy train: driver (sampled) + worker local assignment
+- candidate pairs: emit, dedupe, own-each-by-pair-hash
+- Fellegi-Sunter: parallel map over the owned pairs (only above-tau edges
+  cross the wire)
+- Swoosh closure: distributed connected components (exact) over the above-tau
+  edges
 
 Executors
 ---------

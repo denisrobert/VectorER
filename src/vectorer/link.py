@@ -10,14 +10,11 @@ same entity.
 
 Architecture
 ------------
-Stage chain (mirrors the single-DB modes, with a canonical field projection
-up front so the two schemas can overlap):
-
-    project each side into canonical compared fields
-        -> block: top-k ANN of A against indexed B (directed)  or
-                  cross-DB canopy pairs (symmetric)
-        -> Fellegi-Sunter score the candidates (over the canonical fields)
-        -> classify and emit LinkEdges
+The stage chain mirrors the single-DB modes, with a canonical field projection
+up front so the two schemas can overlap: project each side into canonical
+compared fields, then block (top-k ANN of A against indexed B for directed, or
+cross-DB canopy pairs for symmetric), then Fellegi-Sunter score the candidates
+over the canonical fields, then classify and emit ``LinkEdge`` rows.
 
 The heavy machinery (embedding, FAISS blocking, FS scoring, calibration,
 three-band classification) is the framework's existing, unchanged machinery: a
@@ -25,8 +22,8 @@ canonical comparison field whose value is ``None`` on one side degrades to a
 null level (no evidence), so schema overlap *within* the compared fields is
 handled for free.
 
-Usage
------
+Usage::
+
     from vectorer.link import RecordLinker, FieldMap
 
     linker = RecordLinker(

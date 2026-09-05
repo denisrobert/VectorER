@@ -338,7 +338,9 @@ Key properties:
   List/tuple values are untouched (they are comparison columns for the
   list-aware comparisons), so union records coexist with vector/tag fields.
   Combined with the reflexive default (`idempotent=True`) and a set-union
-  merge, this is the ICAR-compatible Union-Class construction.
+  merge, this is the ICAR-compatible **Union Class** construction of the Swoosh
+  family [13] (Prop. 2.4: a Union-Class match/merge pair satisfies the ICAR
+  properties whenever the base match is reflexive and commutative).
 - **Reflexive by default** (`idempotent=True` on `FellegiSunterScorer`):
   content-identical pairs (equal on every compared field) are forced to
   posterior `1.0`.  This guarantees the *idempotence/reflexivity* property
