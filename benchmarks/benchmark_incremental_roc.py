@@ -29,11 +29,14 @@ import sys
 from pathlib import Path
 from typing import Any, Sequence
 
+from tqdm import tqdm
+
 from vectorer.comparisons import make_comparison
 from vectorer.embeddings import CharacterHashingEmbedding
 from vectorer.incremental import build_incremental_pipeline
 from vectorer.scoring import FellegiSunterScorer
 from vectorer.vectorstores import FlatIndex, InMemoryVectorDatabase
+from perturbations import PERTURBATION_TYPES, apply_perturbation
 
 FIRST_NAMES = [
     "john", "mary", "robert", "susan", "james", "linda", "michael", "patricia",
@@ -272,6 +275,15 @@ def main() -> None:
                              "compared fields, None allowed")
     parser.add_argument("--data-key", default=None,
                         help="when --data-file is a single JSON object, the key holding the records list")
+
+    parser.add_argument("--perturbation", choices=sorted(PERTURBATION_TYPES) + ["all"],
+                        default="all",
+                        help="clerical/transmission perturbation used to generate true-match "
+                             "queries: one of " + ", ".join(sorted(PERTURBATION_TYPES)) +
+                             ", or 'all' (default) to benchmark every type and emit a "
+                             "confusion matrix per type")
+    parser.add_argument("--tau-report", type=float, default=0.85,
+                        help="operating point (default 0.85) for the per-type confusion matrices")
     parser.add_argument("--output", default="results/incremental_roc.json")
     args = parser.parse_args()
 
@@ -327,14 +339,23 @@ def main() -> None:
 
     # ---- 4. Validation queries --------------------------------------------
     # Positives: perturbed copies of validation records (best-posterior match).
+    # When --perturbation=all, every perturbation type is generated (n_positives
+    # per type) and each query is tagged with its type so per-type confusion
+    # matrices can be reported.
     rng_perturb = random.Random(args.seed + 7)
     base_indices = list(range(len(val_records)))
     rng_perturb.shuffle(base_indices)
-    positives = [
-        introduce_variations(val_records[base_indices[i % len(base_indices)]],
-                             variation_rate=args.close_variation_rate)
-        for i in range(args.n_positives)
-    ]
+
+    types = sorted(PERTURBATION_TYPES) if args.perturbation == "all" else [args.perturbation]
+    positives: list[dict] = []
+    query_types: list[str] = []
+    idx = 0
+    for typ in types:
+        for _ in range(args.n_positives):
+            base = val_records[base_indices[idx % len(base_indices)]]
+            positives.append(apply_perturbation(typ, base, rng_perturb))
+            query_types.append(typ)
+            idx += 1
     # Negatives: distinct people NOT in the validation set (full-identity-disjoint).
     neg_base = generate_people(max(args.n_negatives * 10, 500),
                                missing_rate=args.missing_rate, seed=args.seed + 1)
@@ -342,7 +363,7 @@ def main() -> None:
     ref_dobs = {r["date_of_birth"] for r in val_records}
     ref_emails = {r["email"] for r in val_records if r["email"]}
     negatives: list[dict] = []
-    for candidate in neg_base:
+    for candidate in tqdm(neg_base, desc="building negatives", leave=False):
         if len(negatives) >= args.n_negatives:
             break
         nc = dict(candidate)
@@ -361,12 +382,12 @@ def main() -> None:
           f"on the validation set ...")
     scores: list[float] = []
     labels: list[int] = []
-    for q in positives:
+    for q in tqdm(positives, desc="resolving positives", unit="query"):
         r = pipeline.resolve(q)
         best = max((c.probability for c in r.retrieved), default=0.0)
         scores.append(best)
         labels.append(1)
-    for q in negatives:
+    for q in tqdm(negatives, desc="resolving negatives", unit="query"):
         r = pipeline.resolve(q)
         best = max((c.probability for c in r.retrieved), default=0.0)
         scores.append(best)
@@ -400,6 +421,28 @@ def main() -> None:
 
     best_youden = max(range(len(thresholds)),
                       key=lambda i: tpr[i] - fpr[i])
+
+    # ---- Per-perturbation-type confusion matrices at tau_report ----------
+    # Negatives are shared across types, so FP/TN are type-independent; each
+    # type contributes its own TP/FN from its tagged positive queries.
+    tau_r = args.tau_report
+    fp_r = sum(bool(s >= tau_r) for s in scores[len(positives):])
+    tn_r = sum(bool(s < tau_r) for s in scores[len(positives):])
+    perturbation_confusion = {}
+    positive_scores = scores[:len(positives)]
+    for typ in types:
+        tp = sum(bool(s >= tau_r) for s, t in zip(positive_scores, query_types) if t == typ)
+        fn = sum(bool(s < tau_r) for s, t in zip(positive_scores, query_types) if t == typ)
+        n_type = tp + fn
+        precision = tp / (tp + fp_r) if (tp + fp_r) else None
+        recall = tp / n_type if n_type else None
+        perturbation_confusion[typ] = {
+            "n": n_type,
+            "tp": tp, "fp": fp_r, "tn": tn_r, "fn": fn,
+            "precision": round(precision, 4) if precision is not None else None,
+            "recall": round(recall, 4) if recall is not None else None,
+        }
+
     results = {
         "methodology": (
             "calibrated: 80/20 train/validation split; FS m/u fit on the training "
@@ -423,6 +466,8 @@ def main() -> None:
             "tau_range": [args.tau_min, args.tau_max],
             "seed": args.seed,
             "embedder": args.embedder,
+            "perturbation": args.perturbation,
+            "tau_report": args.tau_report,
             "score_definition": "best candidate posterior per resolved query",
         },
         "training": {
@@ -432,6 +477,7 @@ def main() -> None:
         },
         "n_positives": len(positives),
         "n_negatives": len(negatives),
+        "perturbation_confusion_matrices": perturbation_confusion,
         "roc_auc": round(auc, 4),
         "operating_points": {
             "default_tau_0_85": operating_point(0.85),
@@ -450,11 +496,21 @@ def main() -> None:
     Path(args.output).write_text(json.dumps(results, indent=2), encoding="utf-8")
 
     print(f"\nROC AUC (validation) = {auc:.4f}")
-    print(f"tau=0.85: {results['operating_points']['default_tau_0_85']}")
+    print(f"tau={tau_r}: {results['operating_points']['default_tau_0_85']}")
     print(f"best J:  {results['operating_points']['best_youden']}")
-    print(f"Saved ROC/PR curves to {args.output}")
 
-    # Compact table preview
+    print(f"\nPer-perturbation confusion matrix at tau={tau_r} "
+          f"(FP={fp_r}, TN={tn_r} shared):")
+    print(f"  {'perturbation':<22s} {'n':>5s} {'TP':>5s} {'FN':>5s} {'recall':>7s} {'precision':>9s}")
+    for typ in types:
+        m = perturbation_confusion[typ]
+        print(f"  {typ:<22s} {m['n']:>5d} {m['tp']:>5d} {m['fn']:>5d} "
+              f"{m['recall'] if m['recall'] is not None else 'n/a':>7} "
+              f"{m['precision'] if m['precision'] is not None else 'n/a':>9}")
+
+    print(f"\nSaved ROC/PR curves to {args.output}")
+
+    # Compact ROC table preview
     print("\n  tau      TPR      FPR      recall   precision")
     for i in range(0, len(thresholds), max(1, len(thresholds) // 12)):
         print(f"  {thresholds[i]:.3f}   {tpr[i]:.3f}    {fpr[i]:.3f}    {rec[i]:.3f}   {prec[i]:.3f}")

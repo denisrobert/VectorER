@@ -262,11 +262,16 @@ def main() -> None:
         # Synthetic union representatives are new dict objects (not in the
         # one-shot position cache), so they are always re-scored through the
         # scorer's Union-Class existence lift.
+        bar.update(1)
         stats["n_re_scored"] += 1
         stats["n_distinct_records_tested"] += 1
         return scorer.score(left_rep, right_rep)
 
     merge_fn = select_representative if args.merge == "rep" else union_merge
+
+    from tqdm import tqdm
+
+    bar = tqdm(desc="gswoosh re-scores", total=None, unit="test")
 
     t0 = time.perf_counter()
     assignment = gswoosh(
@@ -276,6 +281,7 @@ def main() -> None:
         tau=args.tau,
         merge=merge_fn,
     )
+    bar.close()
     timing["gswoosh_swoosh"] = round(time.perf_counter() - t0, 4)
     timing.setdefault("parse", 0.0)
     timing.setdefault("embed", 0.0)

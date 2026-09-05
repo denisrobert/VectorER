@@ -84,11 +84,9 @@ A "time comparator" is not a single similarity — it is a **composite
 comparator** over two columns (`address`, `event_date`).  The comparison is a
 list of ordered FS levels, each one a conjunction:
 
-```
-level k = (address similarity >= addr_min_k)  AND  (time difference in [lo_k, hi_k])
-```
+$$ \text{level } k = \bigl(\text{address similarity} \ge a_{\min,k}\bigr) \; \land \; \bigl(t_{\text{left}} - t_{\text{right}} \in [\ell_k, h_k]\bigr) $$
 
-Each level carries its own `m`/`u`, so `weight_k = log(m_k / u_k)` encodes the
+Each level carries its own $m/u$, so $w_k = \log(m_k/u_k)$ encodes the
 time decay: a tight time band on an exact address gets a large weight; a wide
 time band on a fuzzy address gets a small one.
 

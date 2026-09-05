@@ -60,6 +60,9 @@ dev = [
     "build>=1.2",
     "twine>=5.0",
 ]
+benchmark = [
+    "tqdm>=4.66",
+]
 
 [project.urls]
 Homepage = "https://github.com/denisrobert/VectorER"

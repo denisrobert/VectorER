@@ -47,6 +47,8 @@ import time
 from pathlib import Path
 from typing import Any, Optional, Sequence
 
+from tqdm import tqdm
+
 from vectorer.comparisons import make_comparison
 from vectorer.embeddings import CharacterHashingEmbedding
 from vectorer.incremental import IncrementalPipeline
@@ -233,7 +235,7 @@ def measure(pipeline: IncrementalPipeline, queries: Sequence[dict], breakdown: b
     embed_times: list[float] = []
     db = pipeline.vector_database
 
-    for person in queries:
+    for person in tqdm(queries, desc="resolving queries", unit="query"):
         if breakdown:
             te = time.perf_counter()
             vector = db.embedding.embed(pipeline._embed_text(person))
@@ -284,7 +286,8 @@ def blocking_quality(pipeline: IncrementalPipeline, base: Sequence[dict], querie
     """Ground-truth quality of the same cold path: top-k recall + match rate."""
     top_k_recall = 0
     matches = 0
-    for position, (person, query) in enumerate(zip(base, queries)):
+    for position, (person, query) in enumerate(tqdm(zip(base, queries), desc="quality check", unit="query",
+                                                    total=len(queries))):
         candidates = pipeline.block(query, k=pipeline.k)
         positions = [c.position for c in candidates]
         if position in positions:

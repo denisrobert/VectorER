@@ -1,7 +1,7 @@
 # vector-er architecture
 
 This document describes the runtime operation modes of the framework and the
-architecture of its two embedding-and-vector-based entity resolution (ER)
+architecture of its three embedding-and-vector-based entity resolution (ER)
 pipelines. It is a design/systems document, not an API reference: it explains
 *what each stage is, why it exists, and how the stages connect*, and points at
 the modules that implement each contract.
@@ -170,22 +170,29 @@ Characteristics:
 
 ### 2.3 Training sub-mode (`scoring.py`)
 
-Both modes consume a calibrated `FellegiSunterScorer`. Two native estimators
-produce the `m`/`u` (per-comparison-level match/non-match) probabilities and
-the base prior, following the Fellegi-Sunter estimation literature [1]:
+All three modes consume a calibrated `FellegiSunterScorer`.  Two native
+estimators produce the `m`/`u` (per-comparison-level match/non-match)
+probabilities and the base prior, following the Fellegi-Sunter estimation
+literature [1]:
 
 - **Supervised**: `calibrate_from_pairs` from labelled match/non-match pair
   records (Laplace-smoothed level proportions), re-derived through the same
   level-assignment machinery used at inference — the calibration-of-false-match
-  rates route of Belin & Rubin [10].
+  rates route of Belin & Rubin [10].  Labelled pairs may come from one
+  database's duplicates, cross-database labelled links (the Link mode), or a
+  gold set.
 - **Unsupervised**: `fit_em` — candidate pairs under blocking rules, `u`
   estimated from uniform random pair samples, `m` and the blocked-pair match
   proportion fit by expectation maximisation [1][19], base prior = recall-adjusted
-  share of blocked matches over all possible pairs.
+  share of blocked matches over all possible pairs.  Works on a single
+  duplicate-bearing population; for the Link mode, fit on a pooled or
+  representative population then apply the same scorer to both sides.
 
 Trained weights are serialized (`save`/`load`) as resolved comparison dicts;
 the scorer is immutable-with-respect-to-weights (rebuilding the `WeightTable`
-after training picks the new m/u up).
+after training picks the new m/u up).  Whichever mode trains the scorer, the
+same calibrated model is then used by incremental, bulk, and Link alike — each
+pipeline receives it via its `scorer=` parameter.
 
 ### 2.4 Link mode (`link.py`)
 
@@ -229,8 +236,9 @@ Blocking exists to bound the number of pairs the expensive scorer sees. The
 framework's invariant is:
 
 > **Any pair that never co-occurs in a blocked candidate set is treated as a
-> non-match.** Blocking therefore trades recall for speed, and both pipelines
-> expose `k` / `overlap`/`n_canopies` knobs to widen the candidate set.
+> non-match.** Blocking therefore trades recall for speed, and all blocking modes
+> expose knobs to widen the candidate set — `k` for incremental, `overlap` /
+> `n_canopies` for bulk and Link's symmetric path.
 
 Two different geometric blocking strategies implement this invariant:
 
@@ -289,9 +297,17 @@ PairValues(left[field]: obj ndarray, right[field]: obj ndarray)
        │  3. log_bf  <- log(m/u) of the assigned level      (null -> 0)
        │  4. optional term-frequency multiplier             (exact-mu / max(tf_l,tf_r))
        ▼
-   log total = log(prior odds) + Σ_comparisons log BF          (clipped)
-   posterior = sigmoid(log total) ; match_weight = log total / ln 2
+   log total   (clipped)
+   posterior, match_weight
 ```
+
+The per-pair math, in Jax Math:
+
+$$ \mathrm{logBF}_i = \begin{cases} \log\!\left(\frac{m_i}{u_i}\right) & \text{if level } i \text{ is an agreement level} \\[2pt] 0 & \text{if level } i \text{ is the null level} \end{cases} $$
+
+$$ \log\text{total} = \log\!\left(\frac{p_0}{1-p_0}\right) + \sum_{\text{comparisons}} \mathrm{logBF}_{\text{assigned}}, \qquad L = \operatorname{clip}\bigl(\log\text{total},\, -\ln 10^{300},\, \ln 10^{300}\bigr) $$
+
+$$ p(\text{match}) = \sigma(L) = \frac{1}{1+e^{-L}}, \qquad \text{match\_weight} = \frac{L}{\ln 2} $$
 
 Key properties:
 
@@ -303,15 +319,15 @@ Key properties:
   at tiny batch sizes (k≈20). The vectorized path is retained for the large
   canopy pair sets.
 - **Level semantics**: levels are ordered by decreasing agreement with a
-  leading null level; each non-null level carries its own `m` and `u` [1].
+  leading null level; each non-null level carries its own $m$ and $u$ [1].
   When a level is not given explicit probabilities, defaults are assigned at
   build time from a standard scheme mirroring the classic match-weight
-  construction [3]: the exact-match level holds a 0.95 match probability,
-  intermediate levels split the remainder, and the u-probabilities correspond
-  to match weights that step from strongly non-matching (−5) to the exact-match
-  weight (+10). This scheme gives well-behaved scores out of the box (e.g. a
-  single exact email match under a 1e-4 prior yields posterior 0.0929) and is
-  what the training sub-mode replaces with data-driven m/u.
+  construction [3]: the exact-match level holds a $0.95$ match probability,
+  intermediate levels split the remainder, and the $u$-probabilities correspond
+  to match weights that step from strongly non-matching ($-5$) to the exact-match
+  weight ($+10$). This scheme gives well-behaved scores out of the box (e.g. a
+  single exact email match under a $10^{-4}$ prior yields posterior $0.0929$) and is
+  what the training sub-mode replaces with data-driven $m/u$.
 - **Weighted score = single evaluation**: `score_and_weight_batch` returns
   posterior and match weight from one model evaluation.
 - **Union-Class existence lift**: a compared field whose value is a
@@ -337,7 +353,7 @@ Key properties:
 `WeightTable` = compiled specs + per-spec log bayes factors + term-frequency
 tables (value -> relative frequency, built from an optional reference
 population), implementing frequency-based matching [4]. Base priors default to
-`1e-4`; the classifier default threshold is `0.85` (operating-score cut-off,
+$10^{-4}$; the classifier default threshold is $0.85$ (operating-score cut-off,
 cf. FS decision rules [3][5]).
 
 ### 4.1 Comparison registry (`comparisons.py`)
@@ -442,13 +458,54 @@ Persistence boundaries: scorer `save/load` (trained comparisons + prior),
 |---|---|
 | Embedding model | implement `EmbeddingModel` (or `SentenceTransformerEmbedding` / `CharacterHashingEmbedding`) and pass `embedder=` — or wrap an already-instantiated, GPU/quantized model via `SentenceTransformerEmbedding(model=...)`; see `user_guide.md` §0 |
 | ANN index | implement `IndexingStrategy` (`FlatIndex` is the cosine reference) |
+| Reference store / scaling | implement `VectorDatabase` against an external (distributed) vector DB — see §7.1 |
 | Blocking geometry | implement a `VectorBlocker`-style blocker or a canopy variant feeding `CanopyIndex` |
 | Comparison set | `register_comparison` / `make_comparison`; custom levels are `test(PairValues, cache) -> mask` |
 | Similarity primitive | register a callable with `distance_function_at_thresholds` or use it directly in a custom level |
 | m/u / prior | `calibrate_from_pairs`, `fit_em`, or override per-level m/u in resolved dicts |
 | Decision rule | subclass `Classifier`/`ThresholdClassifier` (`tau`, optional `possible_low` band) |
 | Cluster merge rule | pass `merge=` to `gswoosh`/`SwooshClusterer` (default: completeness) |
-| Stage behaviour | every stage of both pipelines is a public method you can override or swap |
+| Stage behaviour | every stage of the pipelines is a public method you can override or swap |
+
+### 7.1 Scaling the reference store: external distributed vector DBs
+
+The **incremental** pipeline's only contact with storage is the
+`VectorDatabase` interface (`vectorstores.py`): it calls `index.search(query, k)`
+→ `(indices, scores)` for blocking, `record_at(position)` to fetch candidate
+records, `embedding` to embed queries, and `add`/`update`/`delete` for
+ingestion.  That makes an **external distributed vector database a drop-in
+replacement** — implement `VectorDatabase` (and optionally `IndexingStrategy`)
+against Qdrant, Milvus, Pinecone, Weaviate, Elasticsearch, ChromaDB, etc., and
+the incremental pipeline scales horizontally across nodes with **no pipeline
+changes**.
+
+```
+IncrementalPipeline ──► VectorDatabase (interface) ──► external vector DB
+                         ├─ index.search  ──────────► HNSW/sharded ANN search
+                         ├─ record_at     ──────────► fetch payload by id
+                         ├─ add/update/delete ──────► upsert (vector, id, payload)
+                         └─ embedding     ──────────► stays LOCAL (model)
+```
+
+Only the **index and the record payloads move remote**; the embedding model and
+the FS scorer stay local.  A natural mapping is to use the framework's record
+position as the external document id and store the record dict as the payload,
+so `index.search` returns positions and `record_at(position)` becomes an id
+fetch.  External DBs typically provide HNSW/IVF indexes and sharding, which
+replace the in-memory FAISS flat scan (the real ANN bottleneck as N grows).
+
+**When to choose this vs the intra-machine distributed executor:** the batch
+distributed executor (`distributed_batch_er`) parallelizes across one machine's
+cores and is the answer for *whole-dataset* dedup/clustering.  The external-DB
+route is the answer for *huge reference stores* in incremental/online service
+mode — horizontal ANN scaling and persistence without touching the pipeline.
+The two are orthogonal and can coexist.
+
+**Caveats:** the adapter must preserve cosine semantics (L2-normalize or use
+the DB's cosine metric to keep scores comparable with the local `FlatIndex`);
+be mindful of payload-size limits and serialization cost when storing records as
+payloads; and account for eventual-consistency / freshness if ingestion is
+asynchronous (`ingest_novel` expects immediate visibility).
 
 ---
 

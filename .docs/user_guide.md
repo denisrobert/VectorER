@@ -431,7 +431,53 @@ pipeline = IncrementalPipeline(
 )
 ```
 
-### 3.4 (Re)building from a scratch or empty store
+### 3.4 Scaling the reference store with an external vector DB
+
+The incremental pipeline talks to its reference store exclusively through the
+`VectorDatabase` interface (`add`, `index.search`, `record_at`, `__len__`,
+`embedding`).  The bundled `InMemoryVectorDatabase` is a FAISS flat index in
+memory — great up to a few million records, but a flat scan becomes the
+bottleneck as N grows.  To scale horizontally, implement `VectorDatabase` (and
+optionally `IndexingStrategy`) against an **external distributed vector DB**
+such as Qdrant, Milvus, Pinecone, Weaviate, or Elasticsearch:
+
+```python
+from vectorer.incremental import IncrementalPipeline
+from vectorer.scoring import FellegiSunterScorer
+from my_adapters import QdrantVectorDatabase     # your VectorDatabase impl
+
+db = QdrantVectorDatabase(embedder=embedder, collection="people")
+db.add(references)                               # upsert (vector, position, payload=record)
+
+pipeline = IncrementalPipeline(
+    vector_database=db,
+    scorer=FellegiSunterScorer.from_comparisons(comparisons, threshold=0.85),
+    k=20, tau=0.85,
+)
+result = pipeline.resolve(incoming_record)        # unchanged pipeline code
+```
+
+The adapter maps the framework's interface onto the DB client: use the record
+*position* as the external document id and store the record dict as the
+payload, so `index.search` returns positions and `record_at(position)` is an id
+fetch.  Only the index and records move remote — the embedding model and the FS
+scorer stay local.
+
+When to use it:
+
+- **Incremental / online service at large scale**: HNSW/IVF sharded ANN replaces
+  the flat FAISS scan and gives horizontal scaling + persistence.
+- **Complementary to the intra-machine batch executor**: `distributed_batch_er`
+  parallelizes whole-dataset dedup across one machine's cores; the external-DB
+  route is for huge *reference stores* in online mode.  They can coexist.
+
+Caveats: preserve cosine semantics (L2-normalize or use the DB's cosine metric
+so scores stay comparable with the local `FlatIndex`); watch payload-size
+limits / serialization cost when storing records as payloads; and account for
+eventual consistency if the DB's upserts are async (`ingest_novel` expects
+immediate visibility).  See the architecture doc §7.1 for the detailed design.
+
+### 3.5 (Re)building from a scratch or empty store
 
 The incremental store can bootstrap itself: start with an empty database and
 `add`/`ingest` records as they resolve. Combined with the embedding model:
@@ -442,10 +488,10 @@ pipeline = IncrementalPipeline(db, scorer, k=20, tau=0.85)
 
 for record in stream:
     pipeline.ingest(record)          # parse + embed + append; or
-    # pipeline.ingest_novel(record)  # append only if no existing match (see §3.5)
+    # pipeline.ingest_novel(record)  # append only if no existing match (see §3.6)
 ```
 
-### 3.5 Ingestion modes
+### 3.6 Ingestion modes
 
 - `pipeline.add(records)` — append already-parsed records.
 - `pipeline.ingest(payload)` — parse + embed + append, returns new position.
@@ -456,7 +502,7 @@ for record in stream:
 - `pipeline.ingest_novel_many(deck)` — batch version, returns a position list
   aligned with the input (`None` = skipped duplicate).
 
-### 3.6 Using stage hooks
+### 3.7 Using stage hooks
 
 Every stage is a public method you can override or call directly:
 
@@ -755,7 +801,7 @@ labelled_pairs = [
 scorer_calibrated = FellegiSunterScorer.from_comparisons(comparisons).calibrate_from_pairs(
     labelled_pairs, smoothing=0.5,
 )
-# Use it in either pipeline via scorer=scorer_calibrated
+# Use it in any mode via scorer=scorer_calibrated (incremental, batch, or Link)
 pipeline = build_incremental_pipeline(refs, embedder=embedder,
                                       scorer=scorer_calibrated, k=20, tau=0.85)
 # Calibrated posteriors are only as good as the labelled sample: with a handful
@@ -957,5 +1003,6 @@ for raw in incoming:
            "best_candidate": result.matches[0].candidate_position if result.matches else None}
 ```
 
-For the batch analogue, see §4; the two pipelines share the comparison set,
-scorer and calibration, so a model trained once serves both.
+For the batch analogue, see §4. All modes — incremental, batch, and record
+linkage (§5) — share the comparison set, scorer and calibration, so a model
+trained once serves them all.
