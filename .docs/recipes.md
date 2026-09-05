@@ -8,6 +8,7 @@ self-contained and uses only public API.  For the underlying concepts, see
 - [Recipe: a time-sliced comparator (time-decayed address matching)](#recipe-a-time-sliced-comparator-time-decayed-address-matching)
   - [The one-line version: `time_decay_wrapper`](#the-one-line-version-time_decay_wrapper)
   - [The hand-rolled version (background)](#the-hand-rolled-version-background)
+- [Recipe: importing trained parameters from Splink](#recipe-importing-trained-parameters-from-splink)
 
 ---
 
@@ -226,3 +227,46 @@ make_comparison("address_time_comparison", addr_col="addr", time_col="ts")
 - **Multi-column comparators need `fields=`.** Use `build_spec(..., fields=
   (addr_col, time_col))`, not the declarative-conditions `custom_comparison`,
   because callable-level settings can't infer the columns automatically.
+
+
+---
+
+## Recipe: importing trained parameters from Splink
+
+Reuse a Splink-trained ``m/u`` (and term-frequency weights) model in any of the
+three pipeline modes — most useful when a base database was deduped/linked by
+Splink, or a huge distributed population was cleansed by Splink before being
+loaded into a distributed vector DB for incremental resolution.
+
+Because this framework's comparison levels are native vectorized predicates
+(not Splink SQL), ``import_splink_scorer`` transfers Splink's per-level
+probabilities onto a matching native comparison set by output column name.
+
+```python
+from vectorer.scoring import import_splink_scorer
+from vectorer.comparisons import make_comparison
+
+splink_json = {   # e.g. Linker.misc.save_model_to_json()
+    'comparisons': [...],
+    'probability_two_random_records_match': 1e-5,
+}
+native = [
+    make_comparison('jaro_winkler_at_thresholds', col_name='first_name',
+                    score_threshold_or_thresholds=[0.9, 0.7]),
+    make_comparison('email_comparison', col_name='email'),
+]
+scorer = import_splink_scorer(splink_json, native,
+                              threshold=0.85, base_records=population)
+
+# batch / link / incremental all accept it:
+#   build_batch_pipeline(scorer=scorer, ...)
+#   RecordLinker(scorer=scorer, ...)
+#   IncrementalPipeline(vector_database=db, scorer=scorer, ...)
+```
+
+Caveats: the native comparison set must match Splink's **output column names,
+thresholds, and level order/count** (the helper validates level counts and
+raises otherwise); only the numbers transfer, not the SQL tests; TF value
+tables are rebuilt from ``base_records=``; and exact-identical pairs score 1.0
+by default (``idempotent``) rather than Splink's raw posterior.  See the user
+guide §6.3 for the full caveat list.

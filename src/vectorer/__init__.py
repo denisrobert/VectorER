@@ -28,7 +28,12 @@ from .records import (
     embed_text,
     to_record_dict,
 )
-from .embeddings import CharacterHashingEmbedding, EmbeddingModel, SentenceTransformerEmbedding
+from .embeddings import (
+    CharacterHashingEmbedding,
+    EmbeddingModel,
+    OpenAIEmbedding,
+    SentenceTransformerEmbedding,
+)
 from .vectorstores import FlatIndex, InMemoryVectorDatabase, IndexingStrategy, VectorDatabase
 from .blocking import BlockedCandidate, CanopyIndex, VectorBlocker, canopy_blocking
 from .comparisons import (
@@ -49,7 +54,7 @@ from .comparisons import (
     time_decay_wrapper,
     time_decayed_comparison_builder,
 )
-from .scoring import DEFAULT_PRIOR, DEFAULT_THRESHOLD, FellegiSunterScorer, WeightTable
+from .scoring import DEFAULT_PRIOR, DEFAULT_THRESHOLD, FellegiSunterScorer, WeightTable, import_splink_scorer
 from .classification import (
     Classifier,
     Decision,
@@ -87,6 +92,7 @@ __all__ = [
     # embeddings
     "EmbeddingModel",
     "SentenceTransformerEmbedding",
+    "OpenAIEmbedding",
     "CharacterHashingEmbedding",
     "EMBEDDING_MODEL_ID",
     "EMBEDDING_MODEL_REVISION",
@@ -120,6 +126,7 @@ __all__ = [
     # scoring
     "FellegiSunterScorer",
     "WeightTable",
+    "import_splink_scorer",
     "DEFAULT_PRIOR",
     "DEFAULT_THRESHOLD",
     # classification

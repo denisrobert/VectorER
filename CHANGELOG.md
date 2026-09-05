@@ -5,6 +5,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`import_splink_scorer`** (`vectorer.scoring`): import `m/u` (and
+  term-frequency weights) trained by Splink onto a matching native comparison
+  set, for use in batch, Link, or incremental modes.  Matches Splink
+  comparisons to native ones by output column name, transfers per-level
+  `m_probability` / `u_probability` and TF metadata, preserves level order, and
+  validates level counts.  Documented in the user guide (§6.3) and recipes with
+  the caveats (level alignment, native tests only, TF tables rebuilt from
+  `base_records=`, `idempotent` reflexivity).
+- **`OpenAIEmbedding`** (`vectorer.embeddings`): OpenAI API-backed embedder
+  (`text-embedding-3-*`, `text-embedding-ada-002`), reading `OPENAI_API_KEY`
+  or `api_key=`, with `dimensions=` truncation, batched `embed_many`, and
+  `base_url=` override.  **Prefers the official `openai` SDK when installed**
+  (optional `[openai]` extra), falling back to a dependency-free `urllib`
+  client.
+- **`non_standardized_address` perturbation** (`benchmarks/perturbations.py`):
+  address rewritten in realistic ways (street-type abbreviations/expansions
+  incl. wayfare kinds, unit/civic forms, field-order variants, PO-box/RR
+  substitutes).
+- **`address_change` perturbation**: a genuine move within the same city and
+  postal-code prefix — the most frequent move — to test resilience to stale
+  addresses.
+- **Per-perturbation confusion matrices** in
+  `benchmarks/benchmark_incremental_roc.py` (`--perturbation`,
+  `--tau-report`), with the six typed clerical/transmission perturbation
+  categories, benchmarked against a 300k 2021-census-distributed population.
+- **Sphinx API reference** (`docs/`, `.readthedocs.yaml`) published via
+  ReadTheDocs, including a vector-ER logo (the glyph ER with a vector macron).
+
 ## [0.3.0] - 2026-08-31
 
 ### Added

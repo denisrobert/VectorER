@@ -46,10 +46,21 @@ objects exposing `to_dict()` are coerced automatically
 - `SentenceTransformerEmbedding(model_id, revision, device)` — real transformer
   embeddings; use `vectorer.pins.EMBEDDING_MODEL_ID` (all-MiniLM-L6-v2) with its
   pinned `EMBEDDING_MODEL_REVISION` for reproducible runs.
+- `OpenAIEmbedding(api_key=..., model="text-embedding-3-small", dimensions=...)` —
+  calls the OpenAI Embeddings API (`text-embedding-3-*`,
+  `text-embedding-ada-002`, or a compatible endpoint).  Reads the
+  `OPENAI_API_KEY` env var by default, batches via `embed_many`, and supports
+  the `dimensions` truncation.  Prefers the official `openai` SDK when
+  installed (`pip install -e ".[openai]"`), otherwise falls back to a
+  dependency-free `urllib` client.  Requires network + an API key (or a
+  `base_url=` pointing at a compatible self-hosted endpoint).
 - `CharacterHashingEmbedding(dimension=384)` — deterministic, dependency-free
-  hashed n-gram embedder. Same dimensionality as MiniLM, instant, no download.
-  Used by the tests, the examples, and the benchmarks; switch to the
-  sentence-transformer embedder when you need semantic blocking.
+  hashed character n-gram embedder, and the default. Same dimensionality as
+  MiniLM, instant, no download. Because it keys on character n-grams, a typo,
+  transposition, or OCR slip corrupts only the handful of n-grams it touches —
+  so for the character-level noise of clerical error this default is usually
+  the *best* choice, not just a cheap one. Switch to the sentence-transformer
+  embedder when you need semantic blocking.
 
 Everywhere the pipelines take an embedder, they take an *instance*, not a
 model name — so "the model" is whatever you hand over, already configured:
@@ -879,7 +890,85 @@ result should be discarded. (The one case that *does* raise a clear error is a
 population that generates zero blocked candidate pairs at all — for example a
 tiny set where no two records share a blocking key.)
 
-### 6.3 Persisting the trained model
+### 6.3 Importing trained parameters from Splink
+
+If the **base population was already deduplicated / linked with Splink**, or a
+huge distributed population was first deduped by Splink before being loaded
+into a distributed vector DB for the incremental pipeline, you can **reuse
+Splink's trained `m/u` (and term-frequency weights) directly** — the batch, Link
+and incremental modes all accept a scorer built this way.
+
+Because this framework evaluates the comparison family natively (levels are
+vectorized NumPy predicates, not Splink's SQL), Splink's settings JSON cannot be
+loaded verbatim.  `import_splink_scorer` bridges the gap: it matches Splink's
+trained comparisons to your native comparison set by **output column name** and
+transfers the per-level `m_probability` / `u_probability` (and TF metadata) onto
+the corresponding native levels, preserving the standard level order
+(`null -> exact -> fuzzy -> else`).
+
+```python
+from vectorer.scoring import import_splink_scorer
+from vectorer.comparisons import make_comparison
+
+# 1. Splink's trained model (e.g. Linker.misc.save_model_to_json()).
+splink_json = {/* 'comparisons': [...], 'probability_two_random_records_match': 1e-5 */}
+
+# 2. A native comparison set over the SAME columns and thresholds as Splink.
+native = [
+    make_comparison("jaro_winkler_at_thresholds", col_name="first_name",
+                    score_threshold_or_thresholds=[0.9, 0.7]),
+    make_comparison("email_comparison", col_name="email"),
+]
+
+scorer = import_splink_scorer(
+    splink_json, native,
+    threshold=0.85,
+    base_records=base_population,   # rebuilds TF value tables natively
+)
+
+# 3. Use it in any mode.
+pipeline = build_batch_pipeline(scorer=scorer, ...)     # batch dedupe
+linker = RecordLinker(scorer=scorer, ...)                # link mode
+inc = IncrementalPipeline(vector_database=db, scorer=scorer, ...)   # incremental
+```
+
+**Use cases**
+
+- A base database that has **already been used to train Splink for batch dedupe
+  or linkage** — import that model instead of re-calibrating here.
+- A **huge distributed base population** used by the incremental pipeline:
+  dedupe it once with Splink, then load the cleansed population into a
+  distributed vector DB and resolve against it with this framework — the
+  Splink-trained scorer carries the same decision boundary into the online
+  path.
+
+**Caveats (read before relying on this)**
+
+- **Levels must match exactly.** The native comparison set must have the same
+  output column names, the same thresholds, and therefore the same number of
+  levels in the same order as the Splink model; the helper validates the level
+  count and raises if they differ.  `jaro_winkler_at_thresholds(...)` with the
+  same `score_threshold_or_thresholds` and `date_of_birth_comparison` /
+  `email_comparison` / `exact_match` etc. mirror Splink's level structure.
+- **Splink's `m/u` are only as good as the Splink training data.** If the
+  populations differ (e.g. Splink trained on a different corpus), the weights
+  will be miscalibrated for this dataset.  For the distributed-base use case,
+  the Splink prior and m/u reflect *that* base — appropriate since you score
+  against the same population.
+- **Term-frequency tables are rebuilt natively** from `base_records=`.  The
+  trained `tf_adjustment_weight`/`tf_minimum_u_value` transfer; the value→
+  frequency tables come from your population (pass `base_records=`), not
+  Splink's internal tables.
+- **No SQL is inherited.** Only the trained numbers transfer; level *tests* are
+  the native predicates.  If your Splink comparison used a custom comparison
+  level this framework doesn't implement (`custom_comparison`), map it manually
+  or avoid importing that comparison.
+- **`idempotent=True`** (reflexivity) is applied by default; single-pair
+  posteriors may differ slightly from Splink's on exact-identical pairs (this
+  framework forces `P=1.0`).  Disable with `idempotent=False` to compare
+  raw.
+
+### 6.4 Persisting the trained model
 
 ```python
 scorer_em.save("model.json")                  # comparisons (with m/u) + prior

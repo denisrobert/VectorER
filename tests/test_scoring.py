@@ -6,6 +6,7 @@ import pytest
 from vectorer.scoring import (
     DEFAULT_PRIOR,
     FellegiSunterScorer,
+    import_splink_scorer,
 )
 
 
@@ -216,3 +217,82 @@ def test_fit_em_prior_estimated(fs_scorer):
     # An exact duplicate should be a confident match under the trained model.
     left = {"first_name": "n0", "last_name": "s0", "date_of_birth": "1900-01-01", "email": None}
     assert trained.score(left, dict(left)) > 0.7
+def test_import_splink_scorer_maps_mu_and_prior():
+    from vectorer.comparisons import make_comparison
+
+    splink_settings = {
+        "comparisons": [
+            {
+                "output_column_name": "first_name",
+                "comparison_levels": [
+                    {"sql_condition": "x", "is_null_level": True},
+                    {"sql_condition": "eq", "m_probability": 0.89, "u_probability": 0.0004},
+                    {"sql_condition": "jw>0.9", "m_probability": 0.07, "u_probability": 0.002},
+                    {"sql_condition": "jw>0.7", "m_probability": 0.03, "u_probability": 0.01},
+                    {"sql_condition": "ELSE", "m_probability": 0.01, "u_probability": 0.4},
+                ],
+            },
+        ],
+        "probability_two_random_records_match": 1e-5,
+    }
+    native = [
+        make_comparison("jaro_winkler_at_thresholds", col_name="first_name",
+                        score_threshold_or_thresholds=[0.9, 0.7]),
+    ]
+    scorer = import_splink_scorer(splink_settings, native)
+    assert scorer.prior == pytest.approx(1e-5)
+    spec = scorer.comparisons[0].spec()
+    vals = [(lv.m, lv.u) for lv in spec.levels if not lv.is_null]
+    assert vals[0] == (0.89, 0.0004)
+    assert vals[1] == (0.07, 0.002)
+    assert vals[-1][1] == 0.4
+
+
+def test_import_splink_scorer_tf_fields_carry_over():
+    from vectorer.comparisons import make_comparison
+
+    splink_settings = {
+        "comparisons": [
+            {
+                "output_column_name": "email",
+                "comparison_levels": [
+                    {"sql_condition": "x", "is_null_level": True},
+                    {"sql_condition": "eq", "m_probability": 0.9, "u_probability": 1e-5,
+                     "tf_adjustment_weight": 1.0, "tf_minimum_u_value": 0.0,
+                     "tf_adjustment_column": "email"},
+                    {"sql_condition": "u_eq", "m_probability": 0.05, "u_probability": 0.0005},
+                    {"sql_condition": "jw", "m_probability": 0.03, "u_probability": 0.002},
+                    {"sql_condition": "ujw", "m_probability": 0.01, "u_probability": 0.005},
+                    {"sql_condition": "ELSE", "m_probability": 0.01, "u_probability": 0.4},
+                ],
+            },
+        ],
+        "probability_two_random_records_match": 1e-5,
+    }
+    native = [make_comparison("email_comparison", col_name="email")]
+    scorer = import_splink_scorer(splink_settings, native, base_records=[{"email": "a"}])
+    # TF metadata lands on the exact level (no null).
+    spec = scorer.comparisons[0].spec()
+    exact = spec.levels[1]
+    assert exact.tf_column == "email"
+    assert exact.tf_weight == 1.0
+    assert scorer.score({"email": "a"}, {"email": "a"}) == 1.0
+
+
+def test_import_splink_scorer_rejects_missing_or_mismatched():
+    from vectorer.comparisons import make_comparison
+
+    native = [make_comparison("email_comparison", col_name="email")]
+    # missing comparison
+    with pytest.raises(ValueError, match="no Splink-trained comparison"):
+        import_splink_scorer({"comparisons": [], "probability_two_random_records_match": 1e-5}, native)
+    # level-count mismatch
+    splink = {
+        "comparisons": [{"output_column_name": "email", "comparison_levels": [
+            {"sql_condition": "x", "is_null_level": True},
+            {"sql_condition": "ELSE", "m_probability": 0.9, "u_probability": 0.1},
+        ]}],
+        "probability_two_random_records_match": 1e-5,
+    }
+    with pytest.raises(ValueError, match="levels"):
+        import_splink_scorer(splink, native)

@@ -53,6 +53,9 @@ embedding = [
     "sentence-transformers>=3.0",
     "huggingface-hub>=0.23",
 ]
+openai = [
+    "openai>=1.0",
+]
 test = [
     "pytest>=8.0",
 ]

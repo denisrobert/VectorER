@@ -32,7 +32,7 @@ The package is organised around contracts rather than a monolithic pipeline:
 | Module | Contract / responsibility |
 |---|---|
 | `records.py` | Record model, schemas, parsers, embedding-text serialization |
-| `embeddings.py` | `EmbeddingModel` interface + reference implementations |
+| `embeddings.py` | `EmbeddingModel` interface + reference implementations (sentence-transformers, OpenAI API, deterministic hashing) |
 | `vectorstores.py` | `IndexingStrategy` (ANN), `VectorDatabase` (records + vectors + index) |
 | `blocking.py` | `VectorBlocker` (top-k search), `CanopyIndex` (k-means multi-assignment) |
 | `comparisons.py` | Extensible Fellegi-Sunter comparison set (19 registered options) |
