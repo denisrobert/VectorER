@@ -227,9 +227,12 @@ callables, or as the declarative conditions `"ELSE"`, `'"col_l" IS NULL OR
 ## Fellegi-Sunter scoring and calibration
 
 `vectorer.scoring.FellegiSunterScorer` assigns each pair its highest-priority
-level per comparison, combines per-level `log(m/u)` with the prior odds, and
-derives `match_probability = sigmoid(log(prior odds) + sum log(m/u))` — all
-vectorized. Training is equally native:
+level per comparison, combines per-level $\log(m/u)$ with the prior odds, and
+derives
+
+$$ P(\text{match}) = \sigma\!\Bigl(\log\tfrac{p_0}{1-p_0} + \sum_{\text{comparisons}} \log\tfrac{m_{\text{level}}}{u_{\text{level}}}\Bigr) $$
+
+(vectorized; $\sigma$ is the sigmoid). Training is equally native:
 
 ```python
 from vectorer.scoring import FellegiSunterScorer

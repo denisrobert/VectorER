@@ -305,7 +305,7 @@ The per-pair math, in Jax Math:
 
 $$ \mathrm{logBF}_i = \begin{cases} \log\!\left(\frac{m_i}{u_i}\right) & \text{if level } i \text{ is an agreement level} \\[2pt] 0 & \text{if level } i \text{ is the null level} \end{cases} $$
 
-$$ \log\text{total} = \log\!\left(\frac{p_0}{1-p_0}\right) + \sum_{\text{comparisons}} \mathrm{logBF}_{\text{assigned}}, \qquad L = \operatorname{clip}\bigl(\log\text{total},\, -\ln 10^{300},\, \ln 10^{300}\bigr) $$
+$$ \log\text{total} = \log\!\left(\frac{p_0}{1-p_0}\right) + \sum_{\text{comparisons}} \mathrm{logBF}_{\text{assigned}}, \qquad L = \mathrm{clip}\bigl(\log\text{total},\, -\ln 10^{300},\, \ln 10^{300}\bigr) $$
 
 $$ p(\text{match}) = \sigma(L) = \frac{1}{1+e^{-L}}, \qquad \text{match\_weight} = \frac{L}{\ln 2} $$
 

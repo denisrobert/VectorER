@@ -153,13 +153,16 @@ two probabilities you can reason about like this:
 - **u** = *"if they are in fact different entities, how likely is this level?"* —
   tiny for `exact` on a rare value, larger for `else`.
 
-The score accumulates the log of the ratio `m/u` (the *match weight*) per
+The score accumulates the log of the ratio $m/u$ (the *match weight*) per
 comparison plus a base prior (the probability two *random* records match), and
-the posterior `P(match | data)` is the sigmoid of that total. A comparison whose
-level is `null` contributes **no evidence** (weight 0) — this is why a record
-with most fields missing has a low self-score, and why the scorer is reflexive
-by default (see the architecture doc §4). The **match threshold `tau`** on that
-posterior is the operating point you choose in §7.
+the posterior $\Pr(\text{match} \mid \text{data})$ is the sigmoid of that total:
+
+$$ P = \sigma\!\left( \log\!\Bigl(\tfrac{p_0}{1-p_0}\Bigr) + \sum_{\text{comparisons}} \log\frac{m_{\text{level}}}{u_{\text{level}}} \right) ,\qquad\ \ \sigma(x)=\frac{1}{1+e^{-x}} $$
+
+A comparison whose level is `null` contributes **no evidence** (weight 0) — this
+is why a record with most fields missing has a low self-score, and why the
+scorer is reflexive by default (see the architecture doc §4). The **match
+threshold $\tau$** on that posterior is the operating point you choose in §7.
 
 The key practitioner takeaway: **you are not defining hard rules; you are
 choosing which *attributes* you trust and how strongly.** An `exact` match on a
@@ -322,8 +325,11 @@ merge-specific.
 
 ### 2.5 Domination in this framework
 
-Swoosh domination says "record `r1` is dominated by `r2`" if `r2` can stand in
-for `r1` in every future match — formally `r1 ⩽ r2 ⟺ r1 ≈ r2` and `μ(r1,r2)=r2`
+Swoosh domination says "record $r_1$ is dominated by $r_2$" if $r_2$ can stand in
+for $r_1$ in every future match — formally
+
+$$ r_1 \preceq r_2 \iff r_1 \approx r_2 \ \text{ and } \ \mu(r_1, r_2) = r_2 $$
+
 (merge *domination*). It matters because a dominated record can be dropped,
 shrinking the candidate set. The framework does **not** take a separate
 domination oracle; the domination order is an *emergent consequence of the
@@ -745,9 +751,12 @@ where most records are "smith", an exact match on "smith" is weak evidence
 (these records probably differ elsewhere), while an exact match on "soetoro"
 is strong evidence the records are the same person. **Term-frequency (TF)
 adjustment** rescales the exact-match evidence by how *rare* the matched value
-is in the reference population: the effective `u` of the exact level is divided
-by `max(tf_left, tf_right)^weight`, so a rare exact match posts a much larger
-posterior than a common one.
+is in the reference population: the effective $u$ of the exact level becomes
+
+$$ u_{\text{eff}} = \frac{u_{\text{exact}}}{\max\!\bigl(\mathrm{tf}_{\text{left}},\, \mathrm{tf}_{\text{right}}\bigr)^{w}} $$
+
+so a rare exact match posts a much larger posterior than a common one ($w$ is
+the TF weight, with a $\mathrm{tf}_{\min}$ floor).
 
 How to use it — it is **opt-in and needs a reference population**, and without
 `base_records=` the adjustment silently does nothing:
