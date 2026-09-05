@@ -559,7 +559,93 @@ transport, and `RayExecutor` runs the same orchestration over a Ray cluster.
 cluster (`ray start --head`, then `ray start --address=<head>:6379` on each
 worker), and run with `--ray-address <head-ip>:6379` (`--ray-address auto`
 starts/joins a local instance, exercising the same code path on one host).
-`--verify` asserts the distributed assignment equals single-process.
+`--verify` asserts the distributed assignment equals single-process.  The
+full operations guide is in
+[`.docs/distributed_er.md`](distributed_er.md).
+
+### 7.3 Multi-node architecture (in depth)
+
+The distributed layer is a **map/reduce decomposition of the batch pipeline**
+over the same kernels, so results are identical to single-process (the
+candidate-pair set, scorer settings, and union-find are shared; only *which
+machine* computes each pair differs).
+
+```
+                        ┌────────────────────────────────────────────────────────────┐
+                        │  data shards                                            │
+                        │  ┌──────┐ ┌──────┐ ┌──────┐                            │
+                        │  │rec 0 │ │rec 1 │ │rec 2 │  ... per machine          │
+                        │  └──┬───┘ └──┬───┘ └──┬───┘                            │
+                        ▼     ▼        ▼        ▼                                │
+  MAP (embarrassingly    parse + embed (per machine, contiguous shards)          │
+  parallel)                    │ vectors (global ids)                           │
+                        ┌───────▼───────────────────────────────────────────┐   │
+                        │  canopy train (sampled gather) → shared centroids │◄──┘   global (one)
+                        ▼                                                   │
+                        │  assign_canopies per machine (local) ──► (cid→ids)│
+                        ▼                                                   │
+                        │  emit candidate pairs; own each by hash((i,j))    │
+                        └───────┬───────────────────────────────────────────┘
+                                │   only above-τ pairs cross the wire
+                        ┌───────▼───────────────────────────────────────────┐
+  MAP (streaming)      │  per-machine FS scoring (scorer via to_settings)  │
+                        └───────┬───────────────────────────────────────────┘
+                                ▼
+  REDUCE (bounded)      distributed closure_reduce (per-machine union-find,
+                        shared-node merge → min-position ids)
+                                ▼
+                        identical cluster assignment
+```
+
+**Map stages (shard across machines):**
+
+- **Parse + embed** — each machine embeds a contiguous record shard; global
+  ids are preserved by the contiguous-shard layout, so the flattened order
+  matches single-process.
+- **Canopy assign** — every machine assigns its local vectors against the
+  *shared* centroids (shipped from the driver — trained once on a sampled
+  gather via `gather_canopy_sample`).
+- **Candidate pairs** — cross-shard true matches are preserved by grouping
+  record ids by centroid across *all* machines, then owning each unique pair by
+  a deterministic balanced hash (`hash((i,j)) % n_workers`).
+- **FS scoring** — candidates arrive at workers as *pair lists*; each worker
+  rebuilds the scorer from `scorer.to_settings()` (identical m/u, prior, TF),
+  scores in `batch_size` chunks, and emits only above-`tau` `ScoredPair`s.  The
+  driver consumes a **stream** so its memory is bounded by the largest chunk,
+  not the full edge set.
+
+**Reduce stage (streamed, exact):**
+
+- **Distributed closure** — each worker union-finds its owned edges
+  (`_local_component_map`) and returns `{touched_node → local_min}`; the driver
+  merges worker-local components that share a node into global **min-position**
+  ids.  This is exact connected components (equivalent to the single-process
+  transitive closure), with memory bounded by the edge partition held per
+  worker.  `distributed_closure_reduce` accepts any executor; the merge is
+  order-independent and deterministic across `n_workers`.
+
+**Transport / backends:** the `Executor` seam (`create_executor`,
+`RayExecutor`) abstracts process-pool, thread-pool, and Ray actors.  On a real
+cluster, Ray's shared object store avoids shipping the record population to
+each worker; the pair-position lists and scorer settings are the only
+per-task inputs.  With `--ray-address auto` the same code path runs on a local
+Ray instance (single-host simulation of the multi-node path).
+
+**Determinism:** every stage is deterministic given the same seed:
+contiguous shards, sampled canopy training (`gather_canopy_sample` is
+reproducible), pair-hash ownership, and min-position cluster ids.  `--verify`
+in the examples asserts the distributed assignment equals `BatchPipeline.run`.
+
+**Incremental / link-directed:** the equivalent scaling story is the
+**external distributed vector DB** (§7.1, `QdrantVectorDatabase`): the ANN
+index and record payloads live in the cluster, the query embedder and the k
+candidate FS scoring stay local.  This is why per-query scoring is *not*
+distributed — k is tiny; distribution would add latency, not scale.
+
+**Caveats (surfaced, not forced):** G-Swoosh (sequential merge order), the
+k=small per-query scoring, and k-means canopy training (one cheap global
+gather) remain single-process by design — see the "What stays single-process"
+list in §7.2 and the ops guide.
 
 ---
 

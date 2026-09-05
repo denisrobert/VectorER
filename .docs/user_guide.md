@@ -535,6 +535,11 @@ When to use it:
   (Ray) — see `examples/multi_node_distributed_er.py`; the external-DB
   route is for huge *reference stores* in online mode.  They can coexist.
 
+> **Multi-node operation.**  For the full how-to — what shards/streams across
+> machines, what stays single-process by design, and how to run a Ray cluster
+> or a Qdrant-backed incremental store — see
+> [`.docs/distributed_er.md`](distributed_er.md) and architecture doc §7.3.
+
 Caveats: preserve cosine semantics (L2-normalize or use the DB's cosine metric
 so scores stay comparable with the local `FlatIndex`); watch payload-size
 limits / serialization cost when storing records as payloads; and account for
