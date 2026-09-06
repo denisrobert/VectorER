@@ -741,3 +741,7 @@ in both modes when a real transformer model is used.
     R., & Bond, A. (2022). *Splink: Free Software for Probabilistic Record
     Linkage at Scale.* International Journal of Population Data Science, 7(3).
     [DOI 10.23889/ijpds.v7i3.1794](https://doi.org/10.23889/ijpds.v7i3.1794)
+20. Yancey, W. E. (2004). *Improving EM Algorithm Estimates for Record Linkage
+    Parameters.* U.S. Bureau of the Census, Statistical Research Division,
+    Research Report Series #2004-01.
+    [PDF](https://www.census.gov/content/dam/Census/library/working-papers/2004/adrm/rrs2004-01.pdf)

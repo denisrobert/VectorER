@@ -941,7 +941,59 @@ result should be discarded. (The one case that *does* raise a clear error is a
 population that generates zero blocked candidate pairs at all — for example a
 tiny set where no two records share a blocking key.)
 
-### 6.3 Importing trained parameters from Splink
+### 6.3 Calibrating EM in practice (the operating-point sweep)
+
+**The problem.** EM estimates the match proportion — the FS base prior — jointly
+with the comparison-vector probabilities, and that proportion is the weak
+dimension. When the true match share is small, EM cannot reliably detect the
+match class and can converge to a prior (and therefore a threshold behaviour)
+that is not relevant to linkage. Yancey documents the phenomenon precisely:
+
+> "Failure to converge to the desired class parameters happens when the
+> proportion of one of the classes M, U′, U″ is too small to be detected by the
+> algorithm. In practice, it is the class M of matches that is generally
+> smallest, and when the proportion of this class drops below 0.05 or so, the
+> EM algorithm can converge to parameter values that are not relevant to record
+> linkage calculation." — Yancey (2004), *Improving EM Algorithm Estimates for
+> Record Linkage Parameters* [20].
+
+**Two remedies — use both.**
+
+1. **Match-enrich the training set (Yancey's fix).** Feed EM a population in
+   which the duplicate share is noticeably above the "invisible ≈5%" floor —
+   e.g. the `population_with_duplicates.json` generator (5% + 1% + 0.1%
+   perturbed duplicates), or a blocked-pair sample that is match-enriched.
+   Enriched training lets EM see the match class and fit sensible `m/u`.
+
+2. **Freeze the prior and sweep the operating point.** Even with enrichment,
+   EM's own prior estimate can drift. `fit_em(fixed_prior=...)` holds the base
+   prior **frozen** across every EM iteration (only `m/u` are learned — the
+   Splink-style fixed-prior EM), so you can treat the prior as a knob.  Choose
+   the operating point by sweeping the prior×threshold grid on *labelled* data:
+
+   ```bash
+   python benchmarks/benchmark_bulk_er_em.py \
+     --data-file benchmarks/population_with_duplicates.json \
+     --gt-file benchmarks/population_gt.json \
+     --prior-sweep-priors "1e-5,1e-4,1e-3" \
+     --prior-sweep-taus "0.5,0.7,0.85,0.95" \
+     --n-training-subsample 20000 --em-max-pairs 30000
+   ```
+
+   This reports precision/recall/F1 at each (prior, tau) on the labelled pairs.
+   **Pick the operating point by its precision/recall, not by a nominal
+   threshold** — on the duplicate population this recovered ~5 points of recall
+   (0.70 → 0.755) at precision 1.0 just by moving the prior from EM's estimate
+   to `1e-3`.  Use `fixed_prior` in production with the chosen value, and set
+   `tau` from the grid.
+
+**Why this matters for the benchmark flows.** A scorer trained by default
+`fit_em` (learned prior) may be *correct* yet still under-merge at `tau=0.85`
+because the learned prior is too small — the framework faithfully applies the
+weights; the calibration, not the machinery, is the issue. Calibrating by the
+sweep removes that failure mode.
+
+### 6.4 Importing trained parameters from Splink
 
 If the **base population was already deduplicated / linked with Splink**, or a
 huge distributed population was first deduped by Splink before being loaded
@@ -1019,7 +1071,7 @@ inc = IncrementalPipeline(vector_database=db, scorer=scorer, ...)   # incrementa
   framework forces `P=1.0`).  Disable with `idempotent=False` to compare
   raw.
 
-### 6.4 Persisting the trained model
+### 6.5 Persisting the trained model
 
 ```python
 scorer_em.save("model.json")                  # comparisons (with m/u) + prior
