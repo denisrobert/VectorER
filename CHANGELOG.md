@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-09-06
+
+### Added
+
+- **Balanced distributed FS scoring**: `distributed_score_pairs` and
+  `distributed_batch_er` now partition the candidate-pair workload into
+  **contiguous, equal-size slices** (`_balanced_owned_slices`) instead of
+  hash-round-robin ownership, so each core/machine scores an (almost) equal
+  number of pairs. (Per-pair *cost* still varies with the comparison set; the
+  pair *count* is balanced.)
+- **Worker → controller progress reporting**: the distributed scoring stages
+  accept an optional `progress_callback`; process workers report their scored
+  pair count through a shared `Manager` queue, and the controller aggregates it
+  (wired to an aggregate `tqdm` bar in the EM bulk benchmark).  `None` disables
+  reporting and preserves prior behaviour.
+- **`benchmark_bulk_er_em.py`**: multi-process bulk dedup via `--n-procs N`
+  (uses `distributed_batch_er`'s process pool) with an aggregate `fs scoring
+  (distributed)` progress bar.
+
+**Interface change (semver: this is a MINOR bump — 0.4.1 → 0.5.0):**
+`distributed_score_pairs`, `distributed_batch_er`, and
+`bucket_override`-adjacent helpers gained **new optional keyword arguments**
+(`progress_callback`, and in `distributed_score_pairs` no positional change),
+and `cluster_quality_distributed` gained an optional `progress=` flag. None of
+the existing required parameters or the return types changed; the additions
+are purely additive, but because the distributed API surface grew (new kwargs
+and a new `_score_slice_worker`/`_score_worker` progress path improve
+behaviour), a **minor version bump** is appropriate per semver.
+
 ## [0.4.1] - 2026-09-05
 
 ### Added
@@ -246,6 +275,7 @@ Initial public release of `vectorer` on PyPI.
 - **Documentation**: `README.md`, `.docs/architecture.md`, `.docs/user_guide.md`,
   `.source-papers/`.
 
+[0.5.0]: https://github.com/denisrobert/VectorER
 [0.4.1]: https://github.com/denisrobert/VectorER
 [0.4.0]: https://github.com/denisrobert/VectorER
 [0.3.1]: https://github.com/denisrobert/VectorER

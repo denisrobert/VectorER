@@ -13,7 +13,8 @@ Usage::
 
     python benchmarks/benchmark_bulk_er_em.py \\
         --data-file benchmarks/population_with_duplicates.json \\
-        --n-samplespace 100000   # optional: fit EM on a subsample of the file
+        --n-training-subsample 120000 \\   # EM fits m/u + prior on this sample/limit
+        --bench-limit 40000 \\             # bulk dedupe is run on this sample (tractable)
         --output results/bulk_latency_em.json
 
 Notes
@@ -23,6 +24,10 @@ Notes
 * ``--em-block-on`` chooses the blocking rules used to generate candidate pairs
   for EM; ``--em-max-pairs`` caps them, ``--em-seed`` seeds the random-pair
   sampling, and ``--em-recall`` adjusts the base prior for blocking recall.
+* Because the EM loop and the full-file bulk run are both expensive, the bulk
+  dedup stage is evaluated on ``--bench-limit`` records (sampled deterministically
+  from the file) while EM trains on up to ``--n-training-subsample``.  ``None`` /
+  0 means "use the whole file for that stage" (slow at 300k+).
 * Without ground-truth twin labels (``--gt-file``) only throughput/cluster stats
   are reported; the EM-trained prior and m/u still drive the scores.
 """
@@ -168,6 +173,117 @@ def cluster_quality(
             timing.get("fellegi_sunter", 0) * 1e6 / max(result.n_candidate_pairs, 1),
             3,
         ),
+        "n_procs": 1,
+        "seed": seed,
+    }
+
+
+def cluster_quality_distributed(
+    records: Sequence[dict],
+    twin_entities: dict[int, int],
+    seed: int,
+    scorer: FellegiSunterScorer,
+    n_canopies: int,
+    overlap_m: int,
+    tau: float,
+    n_procs: int,
+    progress: bool = True,
+) -> dict[str, Any]:
+    """Bulk dedup via ``distributed_batch_er``: the FS scoring stage runs
+    across ``n_procs`` process workers (single machine, multiple cores).
+
+    With ``progress=True``, the controller shows an aggregate tqdm bar over
+    scored pair chunks (each worker reports its chunk count through a shared
+    queue)."""
+    import time as _t
+
+    from vectorer.distributed import distributed_batch_er
+
+    progress_callback = None
+    if progress:
+        try:
+            from tqdm import tqdm
+
+            bar = tqdm(desc="fs scoring (distributed)", unit="pairs",
+                       leave=False, ascii=True)
+
+            def progress_callback(n):
+                bar.update(n)
+
+        except Exception:  # noqa: BLE001  (tqdm optional)
+            bar = None
+
+    t_start = _t.perf_counter()
+    t0 = _t.perf_counter()
+    assignment = distributed_batch_er(
+        records,
+        scorer=scorer,
+        n_canopies=n_canopies,
+        overlap_m=overlap_m,
+        tau=tau,
+        seed=seed,
+        n_workers=n_procs,
+        use_threads=False,   # process pool -> parallel FS scoring
+        embed_dim=384,
+        sample_size=200_000,
+        progress_callback=progress_callback,
+    )
+    if progress and bar is not None:
+        bar.close()
+    t_dist = _t.perf_counter() - t0
+    n_candidate_pairs = getattr(assignment, "n_pairs_evaluated", 0)
+
+    tp = fp = fn = 0
+    n_rec = len(records)
+    for twin_position, base_position in twin_entities.items():
+        if not (0 <= twin_position < n_rec and 0 <= base_position < n_rec):
+            continue
+        same = (
+            assignment.node_cluster[twin_position]
+            == assignment.node_cluster[base_position]
+        )
+        if same:
+            tp += 1
+        else:
+            fn += 1
+    n_twins = len(twin_entities)
+    precision = tp / (tp + fp) if tp + fp else 0.0
+    recall = tp / (tp + fn) if tp + fn else 0.0
+    non_singleton_members = sum(
+        len(c.member_positions)
+        for c in assignment.clusters.values()
+        if len(c.member_positions) > 1
+    )
+    merge_rate = non_singleton_members / len(records)
+    largest = max(
+        assignment.clusters.values(),
+        key=lambda c: len(c.member_positions),
+        default=None,
+    )
+    return {
+        "total_records": len(records),
+        "duplicate_pairs_planted": n_twins,
+        "tp": tp,
+        "fp": fp,
+        "fn": fn,
+        "precision": round(precision, 4),
+        "recall": round(recall, 4),
+        "merge_rate": round(merge_rate, 4),
+        "n_clusters": len(assignment.clusters),
+        "n_non_singletons": sum(1 for c in assignment.clusters.values() if len(c.member_positions) > 1),
+        "largest_cluster": (len(largest.member_positions) if largest else 0),
+        "n_candidate_pairs": n_candidate_pairs,
+        "timing_seconds": {
+            "distributed_total": round(t_dist, 4),
+            "wall_seconds": round(_t.perf_counter() - t_start, 4),
+        },
+        "total_seconds": round(t_dist, 4),
+        "records_per_second": round(len(records) / max(t_dist, 1e-9), 1),
+        "candidate_pairs_per_second": round(
+            n_candidate_pairs / max(t_dist, 1e-9), 1
+        ),
+        "fellegi_sunter_seconds_per_million_pairs": None,
+        "n_procs": n_procs,
         "seed": seed,
     }
 
@@ -201,7 +317,11 @@ def main() -> None:
     parser.add_argument("--gt-file", default=None,
                         help="optional JSON object mapping record index -> true duplicate-twin index")
     parser.add_argument("--n-training-subsample", type=int, default=None,
-                        help="optional: fit EM on a subsample of the file (rows) for faster tuning")
+                        help="optional: fit EM on this many rows (subsample) for "
+                             "faster tuning; None = use the whole file")
+    parser.add_argument("--bench-limit", type=int, default=None,
+                        help="optional: run the bulk dedup benchmark on this many "
+                             "rows (deterministic sample of the file); None = whole file")
     parser.add_argument("--n-canopies", type=int, default=128)
     parser.add_argument("--overlap", type=int, default=2,
                         help="top-m canopy assignments per record (1 = hard partition)")
@@ -217,6 +337,10 @@ def main() -> None:
                         help="blocking-recall adjustment for the EM prior")
     parser.add_argument("--em-seed", type=int, default=None,
                         help="seed for EM random-pair sampling (defaults to --seed+313)")
+    parser.add_argument("--n-procs", type=int, default=None,
+                        help="run the bulk dedup FS-scoring stage across N process "
+                             "workers (multi-core) instead of single-process. "
+                             "Use e.g. --n-procs 8 on an 8-core machine.")
     parser.add_argument("--output", default="results/bulk_latency_em.json")
     args = parser.parse_args()
 
@@ -239,15 +363,15 @@ def main() -> None:
     # --- EM training on the duplicate-bearing population -------------------
     if args.n_training_subsample is not None and args.n_training_subsample < len(records):
         rng = random.Random(args.seed)
-        sample = rng.sample(records, min(args.n_training_subsample, len(records)))
-        print(f"EM training on a subsample of {len(sample):,} records ...")
-        em_data = sample
+        em_data = rng.sample(records, min(args.n_training_subsample, len(records)))
+        print(f"EM training on a subsample of {len(em_data):,} records ...")
     else:
-        print(f"EM training on all {len(records):,} records ...")
         em_data = records
+        print(f"EM training on all {len(records):,} records ...")
 
     block_on = args.em_block_on if args.em_block_on else [("first_name",), ("date_of_birth",)]
     em_seed = args.em_seed if args.em_seed is not None else args.seed + 313
+    n_procs = args.n_procs if args.n_procs else None
     t0 = time.perf_counter()
     scorer = em_train(
         em_data,
@@ -264,25 +388,47 @@ def main() -> None:
           f"{em_diagnostics['probability_two_random_records_match']:.3g}")
 
     # --- bulk dedup with the EM-trained scorer ------------------------------
-    n_canopies = min(args.n_canopies, max(1, len(records) // 39))
+    # Keep the heavy dedup tractable: option to sample the evaluation set.
+    bench_records = records
+    if args.bench_limit is not None and args.bench_limit < len(records):
+        rng = random.Random(args.seed + 1)
+        bench_records = rng.sample(records, min(args.bench_limit, len(records)))
+        # Re-map ground-truth twins (indices are into `records`, so only valid
+        # when eval == full file; otherwise report counts without GT mapping).
+        twin_entities = {}
+        print(f"Bulk benchmark on a deterministic subsample of {len(bench_records):,} "
+              f"records (ground-truth mapping disabled for a subsample)")
+
+    n_canopies = min(args.n_canopies, max(1, len(bench_records) // 39))
     from vectorer.clustering import union_merge
 
     merge_fn = union_merge if args.merge == "union" else None
-    pipeline = BatchPipeline(
-        embedder=build_embedder(args.embedder),
-        scorer=scorer,
-        n_canopies=n_canopies,
-        overlap_m=args.overlap,
-        canopy_seed=args.seed,
-        tau=args.tau,
-        merge=merge_fn,
-    )
-    print(f"Running batch pipeline (canopies={n_canopies}, overlap={args.overlap}, "
-          f"tau={args.tau}, embedder={args.embedder}, merge={args.merge}, EM-scorer)...")
 
-    t0 = time.perf_counter()
-    quality = cluster_quality(pipeline, records, twin_entities, args.seed)
-    quality["wall_seconds"] = round(time.perf_counter() - t0, 4)
+    import time as _t
+
+    t0 = _t.perf_counter()
+    if n_procs and n_procs > 1:
+        print(f"Running distributed batch pipeline (canopies={n_canopies}, "
+              f"overlap={args.overlap}, tau={args.tau}, EM-scorer, "
+              f"n_procs={n_procs})...")
+        quality = cluster_quality_distributed(
+            bench_records, twin_entities, args.seed, scorer,
+            n_canopies, args.overlap, args.tau, n_procs,
+        )
+    else:
+        print(f"Running batch pipeline (canopies={n_canopies}, overlap={args.overlap}, "
+              f"tau={args.tau}, embedder={args.embedder}, merge={args.merge}, EM-scorer)...")
+        pipeline = BatchPipeline(
+            embedder=build_embedder(args.embedder),
+            scorer=scorer,
+            n_canopies=n_canopies,
+            overlap_m=args.overlap,
+            canopy_seed=args.seed,
+            tau=args.tau,
+            merge=merge_fn,
+        )
+        quality = cluster_quality(pipeline, bench_records, twin_entities, args.seed)
+    quality["wall_seconds"] = round(_t.perf_counter() - t0, 4)
 
     results = {
         "parameters": {
@@ -292,6 +438,7 @@ def main() -> None:
             "data_key": args.data_key,
             "gt_file": args.gt_file,
             "training_subsample": len(em_data),
+            "bench_limit": len(bench_records),
             "em_max_pairs": args.em_max_pairs,
             "em_recall": args.em_recall,
             "em_seed": em_seed,
@@ -302,6 +449,7 @@ def main() -> None:
             "seed": args.seed,
             "embedder": args.embedder,
             "merge": args.merge,
+            "n_procs": n_procs if n_procs else 1,
         },
         "em_training_seconds": round(em_seconds, 4),
         "em_learned_prior": em_diagnostics["probability_two_random_records_match"],

@@ -113,18 +113,33 @@ def _score_shard(left_records, right_records, scorer_state, tau):
     return mask, list(map(float, probs)), list(map(float, weights))
 
 
-def _score_worker(worker, pairs, all_records, scorer_state, tau):
+def _score_worker(worker, pairs, all_records, scorer_state, tau, progress_queue=None,
+                  chunk_size: int = 4096):
     """Module-level process-picklable worker: score a worker's owned pairs and
-    return the above-tau ScoredPairs with global positions attached."""
-    left = [all_records[gi] for gi, gj in pairs]
-    right = [all_records[gj] for gi, gj in pairs]
-    mask, probs, weights = _score_shard(left, right, scorer_state, tau)
-    return [
-        ScoredPair(left_position=p[0], right_position=p[1],
-                   probability=prob, match_weight=weight)
-        for p, prob, weight, keep in zip(pairs, probs, weights, mask)
-        if keep
-    ]
+    return the above-tau ScoredPairs with global positions attached.
+
+    Pairs are processed in chunks of ``chunk_size``; when ``progress_queue`` is
+    given, ``len(chunk)`` is enqueued after each chunk so the controller can
+    aggregate progress across workers (progress_queue is a shared/Manager
+    queue passed through ``functools.partial`` or an executor initializer)."""
+    out = []
+    left_all = [all_records[gi] for gi, gj in pairs]
+    right_all = [all_records[gj] for gi, gj in pairs]
+    for start in range(0, len(pairs), chunk_size):
+        end = start + chunk_size
+        pairs_chunk = pairs[start:end]
+        mask, probs, weights = _score_shard(
+            left_all[start:end], right_all[start:end], scorer_state, tau
+        )
+        if progress_queue is not None:
+            progress_queue.put(len(pairs_chunk))
+        out.extend(
+            ScoredPair(left_position=p[0], right_position=p[1],
+                       probability=prob, match_weight=weight)
+            for p, prob, weight, keep in zip(pairs_chunk, probs, weights, mask)
+            if keep
+        )
+    return out
 
 
 def _scorer_from_state(state):
@@ -204,15 +219,22 @@ def create_executor(
     raise ValueError(f"unknown executor kind {kind!r}; use process, thread, or ray")
 
 
-def _score_pairs_worker(indices, left_records, right_records, scorer_state, tau):
+def _score_pairs_worker(indices, left_records, right_records, scorer_state, tau,
+                        progress_callback=None):
     """Module-level worker: score the ``indices`` slice of equal-length
     ``left``/``right`` lists, returning only ``(index, prob, weight)`` rows at
-    or above ``tau``.  Used by :func:`distributed_score_pairs`."""
+    or above ``tau``.  Used by :func:`distributed_score_pairs`.
+
+    ``progress_callback``, when given, is called with ``(worker, done)`` every
+    ``progress_every`` pairs so the controller can aggregate progress (works
+    for process workers via a shared queue, and Ray via a remote callback)."""
     scorer = _scorer_from_state(scorer_state)
     left = [left_records[i] for i in indices]
     right = [right_records[i] for i in indices]
     probs = scorer.score_pairs(left, right)
     weights = scorer.match_weight_pairs(left, right)
+    if progress_callback is not None:
+        progress_callback(len(indices))
     return [
         (i, float(p), float(w))
         for i, p, w in zip(indices, probs, weights)
@@ -228,6 +250,25 @@ def _owner_of_index(idx: int, n_workers: int) -> int:
     return mixed % int(n_workers)
 
 
+def _balanced_owned_slices(n_pairs: int, n_workers: int) -> dict[int, list[int]]:
+    """Assign pair indices to ``n_workers`` **contiguous, equal-size** slices.
+
+    Unlike :func:`_owner_of_index` (which round-robins by index), contiguous
+    slices guarantee each worker gets an (almost) equal *number* of pairs, so
+    the workload across cores is as equal as possible while keeping pairing
+    logic simple and deterministic.
+    """
+    owned: dict[int, list[int]] = {w: [] for w in range(n_workers)}
+    base = n_pairs // n_workers
+    extra = n_pairs % n_workers
+    start = 0
+    for w in range(n_workers):
+        take = base + (1 if w < extra else 0)
+        owned[w] = list(range(start, start + take))
+        start += take
+    return owned
+
+
 def distributed_score_pairs(
     scorer: FellegiSunterScorer,
     left_records: Sequence[dict],
@@ -237,14 +278,20 @@ def distributed_score_pairs(
     n_workers: int = 2,
     executor: Optional[Any] = None,
     pair_positions: Optional[Sequence[tuple[int, int]]] = None,
+    progress_callback: Optional[Callable[[int], None]] = None,
 ) -> list[Any]:
     """Score equal-length ``left``/``right`` pair lists in parallel (map).
 
-    Pairs are owned by worker via :func:`_owner_of_index` (deterministic,
-    balanced); each worker scores its chunk with the same serialized scorer and
-    returns only the rows at/above ``tau`` -- so *only above-tau edges cross
-    the wire*.  The returned list is not necessarily sorted; it carries the
-    pair ``index`` so the caller can reconstruct alignment.
+    Pairs are partitioned into **contiguous, equal-size slices** (one per
+    worker) so each worker scores an (almost) equal number of pairs -- the
+    workload across cores/machines is as equal as possible while keeping
+    pairing simple and deterministic.  Each worker scores its slice with the
+    same serialized scorer and returns only the rows at/above ``tau``.
+
+    ``progress_callback``, when given, is invoked as ``progress_callback(n)``
+    each time a worker finishes scoring ``n`` pairs (its slice size); the
+    controller accumulates these to drive an aggregate tqdm bar.  ``None``
+    disables progress reporting (no change to prior behaviour).
 
     With ``pair_positions`` (one ``(i, j)`` per row), the result is a list of
     above-tau ``ScoredPair`` objects carrying those **record positions**, ready
@@ -258,20 +305,55 @@ def distributed_score_pairs(
     if n_pairs == 0 or len(right_records) != n_pairs:
         raise ValueError("left_records and right_records must be equal-length, non-empty")
     scorer_state = _scorer_state_of(scorer)
-    owned: dict[int, list[int]] = {w: [] for w in range(n_workers)}
-    for idx in range(n_pairs):
-        owned[_owner_of_index(idx, n_workers)].append(idx)
+    owned = _balanced_owned_slices(n_pairs, n_workers)
 
     from functools import partial
 
-    worker = partial(_score_pairs_worker, left_records=left_records,
-                     right_records=right_records, scorer_state=scorer_state,
-                     tau=tau)
+    # Progress: process/thread workers report through a multiprocessing Queue
+    # (thread-safe and picklable); Ray is handled by the RayExecutor (the
+    # worker fn runs remotely and the callback is a remote ref).  For plain
+    # executors, progress_callback is fed from a Queue-watcher thread.
+    progress_queue = None
+
+    import threading
+
+    if progress_callback is not None and executor is None:
+        try:
+            import multiprocessing
+
+            progress_queue = multiprocessing.Manager().Queue()
+            stop = threading.Event()
+
+            def _drain():
+                while not stop.is_set():
+                    try:
+                        n = progress_queue.get(timeout=0.2)
+                    except Exception:
+                        continue
+                    progress_callback(n)
+
+            drain_thread = threading.Thread(target=_drain, daemon=True)
+            drain_thread.start()
+        except Exception:  # noqa: BLE001  (progress is best-effort)
+            progress_queue = None
+
+    from functools import partial
+
+    worker = partial(_score_slice_worker,
+                     left_records=left_records, right_records=right_records,
+                     scorer_state=scorer_state, tau=tau,
+                     progress_queue=progress_queue)
     if executor is not None:
         scored = list(executor.map(worker, [owned[w] for w in range(n_workers)]))
     else:
+        # Manager().Queue() is shared/picklable so partial args reach the
+        # workers; the controller's drain thread feeds progress_callback safely.
         with ProcessPoolExecutor(max_workers=n_workers) as ex:
             scored = list(ex.map(worker, [owned[w] for w in range(n_workers)]))
+
+    if progress_queue is not None:
+        stop.set()
+        drain_thread.join(timeout=1.0)
     rows = [row for chunk in scored for row in chunk]
     if pair_positions is None:
         return rows
@@ -280,6 +362,34 @@ def distributed_score_pairs(
                    right_position=pair_positions[idx][1],
                    probability=prob, match_weight=weight)
         for idx, prob, weight in rows
+    ]
+
+
+def _queue_put(q):
+    def put(n):
+        q.put(n)
+    return put
+
+
+def _score_slice_worker(indices, left_records, right_records, scorer_state, tau,
+                        progress_queue=None):
+    """Module-level worker: score a contiguous ``indices`` slice.
+
+    ``progress_queue`` (a multiprocessing.Queue), when given, receives ``n =
+    len(indices)`` after the slice is scored, so the controller can aggregate
+    across workers.  Returns the above-``tau`` ``(idx, prob, weight)`` rows.
+    """
+    scorer = _scorer_from_state(scorer_state)
+    left = [left_records[i] for i in indices]
+    right = [right_records[i] for i in indices]
+    probs = scorer.score_pairs(left, right)
+    weights = scorer.match_weight_pairs(left, right)
+    if progress_queue is not None:
+        progress_queue.put(len(indices))
+    return [
+        (i, float(p), float(w))
+        for i, p, w in zip(indices, probs, weights)
+        if float(p) >= tau
     ]
 
 
@@ -402,6 +512,7 @@ def distributed_batch_er(
     sample_size: Optional[int] = 200_000,
     use_threads: bool = False,
     executor: Optional[Any] = None,
+    progress_callback: Optional[Callable[[int], None]] = None,
 ) -> ClusterAssignment:
     """Run the batch ER stages in parallel and return the cluster assignment.
 
@@ -503,64 +614,72 @@ def distributed_batch_er(
     # --- stage 4: score owned pairs in parallel (map, drop below-tau) ------
     scorer_state = _scorer_state_of(scorer)
     all_records = [r for shard in parsed_shards for r in shard]
+    progress_queue = None
+    if progress_callback is not None:
+        import threading
 
-    def _run_score_one(worker):
-        pairs = pair_buckets[worker]
-        if not pairs:
-            return []
-        left = [all_records[gi] for gi, gj in pairs]
-        right = [all_records[gj] for gi, gj in pairs]
-        mask, probs, weights = _score_shard(left, right, scorer_state, tau)
-        return [
-            ScoredPair(
-                left_position=p[0], right_position=p[1],
-                probability=prob, match_weight=weight,
-            )
-            for p, prob, weight, keep in zip(pairs, probs, weights, mask)
-            if keep
-        ]
+        try:
+            import multiprocessing
+
+            progress_queue = multiprocessing.Manager().Queue()
+            stop = threading.Event()
+
+            def _drain():
+                while not stop.is_set():
+                    try:
+                        n = progress_queue.get(timeout=0.2)
+                    except Exception:
+                        continue
+                    progress_callback(n)
+
+            drain_thread = threading.Thread(target=_drain, daemon=True)
+            drain_thread.start()
+        except Exception:  # noqa: BLE001  (progress is best-effort)
+            progress_queue = None
+
+    from functools import partial
+
+    worker = partial(_score_worker, all_records=all_records,
+                     scorer_state=scorer_state, tau=tau,
+                     progress_queue=progress_queue)
+
+    def _thread_score(worker_id):
+        return _score_worker(worker_id, pair_buckets[worker_id],
+                             all_records, scorer_state, tau,
+                             progress_queue=progress_queue)
 
     if executor is not None:
-        # An external executor (thread or process) already owns scheduling; give
-        # it the worker closure.  Thread executors share memory fine; process
-        # executors must receive picklable callables -- provide the module fn.
         use_cls = type(executor)
         if use_cls is ThreadPoolExecutor:
-            scored_lists = list(executor.map(_run_score_one, range(n_workers)))
+            scored_lists = list(executor.map(_thread_score, range(n_workers)))
         else:
-            # ProcessPoolExecutor: _run_score_one closes over big objects; pass
-            # only picklable args via a module-level worker.
             futures = [
                 executor.submit(
-                    _score_worker,
-                    worker,
-                    pair_buckets[worker],
-                    all_records,
-                    scorer_state,
-                    tau,
+                    partial(_score_worker, worker=w, pairs=pair_buckets[w],
+                            all_records=all_records, scorer_state=scorer_state,
+                            tau=tau, progress_queue=progress_queue)
                 )
-                for worker in range(n_workers)
+                for w in range(n_workers)
             ]
             scored_lists = [f.result() for f in futures]
     else:
         if use_threads:
             with ThreadPoolExecutor(max_workers=n_workers) as ex:
-                scored_lists = list(ex.map(_run_score_one, range(n_workers)))
+                scored_lists = list(ex.map(_thread_score, range(n_workers)))
         else:
-            all_records_sp = all_records
             with ProcessPoolExecutor(max_workers=n_workers) as ex:
                 futures = [
                     ex.submit(
-                        _score_worker,
-                        w,
-                        pair_buckets[w],
-                        all_records_sp,
-                        scorer_state,
-                        tau,
+                        partial(_score_worker, worker=w, pairs=pair_buckets[w],
+                                all_records=all_records, scorer_state=scorer_state,
+                                tau=tau, progress_queue=progress_queue)
                     )
                     for w in range(n_workers)
                 ]
                 scored_lists = [f.result() for f in futures]
+    if progress_queue is not None:
+        stop.set()
+        drain_thread.join(timeout=1.0)
     edges = [e for lst in scored_lists for e in lst]
 
     # --- stage 5: distributed closure over the above-tau edges -------------

@@ -26,6 +26,44 @@ from .records import RecordSchema, to_record_dict
 from .scoring import DEFAULT_THRESHOLD, FellegiSunterScorer
 
 
+class _NullProgressBar:
+    """No-op progress bar (used when the optional ``tqdm`` is unavailable)."""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def update(self, *args, **kwargs):
+        return self
+
+    def close(self):
+        return None
+
+
+def _stage_progress_bar(total: int = 5):
+    """A determinate tqdm bar over the batch stages, or a no-op surrogate."""
+    try:
+        from tqdm import tqdm
+
+        return tqdm(total=total, desc="batch stages", unit="stage",
+                    leave=False, ascii=True)
+    except Exception:  # noqa: BLE001  (tqdm is optional)
+        return _NullProgressBar()
+
+
+def _chunk_progress_bar(desc: str, total: int):
+    """A determinate tqdm bar over a chunked subtask (e.g. FS pair scoring)."""
+    try:
+        from tqdm import tqdm
+
+        return tqdm(total=max(int(total), 1), desc=desc, unit="chunk",
+                    leave=False, ascii=True)
+    except Exception:  # noqa: BLE001  (tqdm is optional)
+        return _NullProgressBar()
+
+
 @dataclass
 class BatchResult:
     """Output of a batch clustering run plus its stage statistics."""
@@ -110,7 +148,7 @@ class BatchPipeline:
     # -- stage hooks --------------------------------------------------------
 
     def embed_all(self, records: Sequence[dict]) -> list[list[float]]:
-        """Stage 2: embed every record into a dense vector."""
+        """Stage 2: embed every record into a dense vector (batched)."""
         texts = [self._embed_text(record) for record in records]
         return [list(v) for v in self.embedder.embed_many(texts)]
 
@@ -129,10 +167,16 @@ class BatchPipeline:
         pairs: Sequence[tuple[int, int]],
         batch_size: int = 4096,
     ) -> list[ScoredPair]:
-        """Stage: score every canopy candidate pair with Fellegi-Sunter."""
+        """Stage: score every canopy candidate pair with Fellegi-Sunter.
+
+        Shows a determinate subtask progress bar over the pair chunks (the
+        dominant stage) when ``tqdm`` is available.
+        """
         scored: list[ScoredPair] = []
         left_records = [records[i] for i, _ in pairs]
         right_records = [records[j] for _, j in pairs]
+        n_chunks = max(1, -(-len(pairs) // batch_size))
+        pro = _chunk_progress_bar("fellegi_sunter pairs", n_chunks)
         for start in range(0, len(pairs), batch_size):
             left_slice = left_records[start : start + batch_size]
             right_slice = right_records[start : start + batch_size]
@@ -149,6 +193,8 @@ class BatchPipeline:
                         match_weight=float(weight),
                     )
                 )
+            pro.update(1)
+        pro.close()
         return scored
 
     def cluster(
@@ -166,20 +212,30 @@ class BatchPipeline:
         records: Sequence[Any],
         schema: Optional[RecordSchema] = None,
     ) -> BatchResult:
-        """Cluster the whole dataset: parse -> embed -> canopy -> FS -> Swoosh."""
+        """Cluster the whole dataset: parse -> embed -> canopy -> FS -> Swoosh.
+
+        When the optional ``tqdm`` package is importable, a per-stage progress
+        bar is shown (parse, embed, canopy, FS scoring, Swoosh).  Otherwise the
+        run is silent -- behaviour identical.
+        """
         del schema  # reserved for id reporting
+        bar = _stage_progress_bar()
+
         timing: dict[str, float] = {}
         t0 = perf_counter()
         parsed = [to_record_dict(r) for r in records]
         timing["parse"] = perf_counter() - t0
+        bar.update(1)
 
         t0 = perf_counter()
         vectors = self.embed_all(parsed)
         timing["embed"] = perf_counter() - t0
+        bar.update(1)
 
         t0 = perf_counter()
         canopy = self.block(vectors)
         timing["canopy"] = perf_counter() - t0
+        bar.update(1)
 
         pairs = list(canopy.candidate_pairs())
         n_candidate_pairs = len(pairs)
@@ -187,10 +243,13 @@ class BatchPipeline:
         t0 = perf_counter()
         scored_pairs = self.score(parsed, pairs)
         timing["fellegi_sunter"] = perf_counter() - t0
+        bar.update(1)
 
         t0 = perf_counter()
         assignment = self.cluster(parsed, scored_pairs)
         timing["swoosh"] = perf_counter() - t0
+        bar.update(1)
+        bar.close()
 
         return BatchResult(
             assignment=assignment,

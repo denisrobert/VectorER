@@ -718,7 +718,14 @@ class FellegiSunterScorer:
         ]
         pi = 0.5
         prev_pi = None
-        for _ in range(int(max_iterations)):
+        try:
+            from tqdm import tqdm
+
+            em_bar = tqdm(range(int(max_iterations)), desc="EM m/u", unit="iter",
+                          leave=False, ascii=True)
+        except Exception:  # noqa: BLE001  (tqdm optional)
+            em_bar = range(int(max_iterations))
+        for _ in em_bar:
             # E-step (log-space responsibilities over the blocked pairs).
             log_m = np.zeros(n_pairs, dtype=np.float64)
             log_u = np.zeros(n_pairs, dtype=np.float64)
