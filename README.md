@@ -31,9 +31,10 @@ batch of candidate pairs at once, and the Fellegi-Sunter math (level assignment
   pipeline architecture for incremental and bulk ER, blocking/scoring/clustering
   design, extension points, and design rationale.
 - **[`.docs/user_guide.md`](.docs/user_guide.md)** — hands-on guide covering
-  both pipelines end to end: comparison selection, reference-store persistence,
-  ingestion modes, batch clustering, calibration, threshold choice, and
-  production notes built around the incremental person-resolution use case.
+  all three modes end to end: comparison selection, reference-store persistence,
+  ingestion modes, batch clustering, record linkage, calibration, threshold
+  choice, and production notes built around the incremental person-resolution
+  use case.
 - **API reference (`docs/`)** — Sphinx/ReadTheDocs pages. Build locally with:
 
   ```bash
@@ -341,7 +342,7 @@ python -m pytest
 The suite covers parsing, the comparison registry (every option constructible),
 canonical Jaro-Winkler reference values, vectorized FS scoring (including a
 default-prior posterior parity check), calibration and native EM, vector +
-canopy blocking, Swoosh clustering, persistence round-trips, and both pipelines
+canopy blocking, Swoosh clustering, persistence round-trips, and all three modes
 end to end — all offline with the deterministic hashing embedder.
 
 ## Notes and caveats
