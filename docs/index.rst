@@ -17,7 +17,10 @@ practical recipes, see the docs in the
 ``.docs/``).
 
 .. note::
-   Version **{{ version }}**.
+   Use the **version selector** in the top bar to switch between releases —
+   `latest`, `stable`, or any published ``v0.x.y``.  The version being viewed
+   is also shown in the page header/footer.  Curated release notes live in the
+   repository's ``CHANGELOG.md``.
 
 Installation
 ------------

@@ -65,8 +65,10 @@ exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 # HTML theme.
 html_theme = "sphinx_rtd_theme"
 html_static_path = ["_static"]
-html_title = "vector-er"
-html_short_title = "vector-er"
+# Keep the default title pattern so the RTD theme inserts the version
+# ("vector-er <short> v0.4.1"), instead of pinning a static title.
+html_title = f"vector-er v{version}"
+html_short_title = f"vector-er v{version}"
 
 # Branding: the vector-er logo (glyph "ER" with a vector macron overline).
 html_logo = "_static/logo.svg"

@@ -1,5 +1,18 @@
 # Read the Docs configuration file.
 # https://docs.readthedocs.io/en/stable/config-file/v2.html
+#
+# NOTE ON VERSIONS:
+# Read the Docs builds "latest" (default branch) and "stable" (the latest
+# git tag) automatically.  It does NOT activate every tag as a separate
+# *version* page from this file — that is a project-dashboard setting under
+# "Admin -> Versions".  After importing this repository, Go to the RTD
+# dashboard and either:
+#   (a) click "Activate" on each published version tag (v0.1.0 .. v0.4.1), or
+#   (b) toggle "Automatically activate" for new tags so future releases build
+#       their own version pages.
+# Each activated version builds docs/ with `version = 0.x.y` (from the
+# package's __version__ at that tag), so the version selector then lists the
+# published versions, not just "latest" and "stable".
 
 version: 2
 
@@ -17,3 +30,6 @@ python:
 
 sphinx:
   configuration: docs/conf.py
+  # Build per-version; the version label comes from the tag/branch, and
+  # conf.py reads vectorer.__version__ for the in-page version string.
+  fail_on_warning: true
