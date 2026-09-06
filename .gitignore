@@ -28,5 +28,6 @@ examples/output/
 .source-papers/
 .datasets/
 
-# Large Files to regenerate
+# Large regeneratable benchmark populations
 benchmarks/population.json
+benchmarks/population_with_duplicates.json
