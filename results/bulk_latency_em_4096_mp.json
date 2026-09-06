@@ -1,0 +1,89 @@
+{
+  "parameters": {
+    "total_records": 322203,
+    "duplicate_pairs_planted": 0,
+    "data_file": "benchmarks\\population_with_duplicates.json",
+    "data_key": null,
+    "gt_file": null,
+    "training_subsample": 120000,
+    "bench_limit": 322203,
+    "em_max_pairs": 100000.0,
+    "em_recall": 0.7,
+    "em_seed": 355,
+    "em_block_on": [
+      [
+        "first_name"
+      ],
+      [
+        "date_of_birth"
+      ]
+    ],
+    "n_canopies": 4096,
+    "overlap": 2,
+    "tau": 0.85,
+    "seed": 42,
+    "embedder": "hashing",
+    "merge": "rep",
+    "n_procs": 8
+  },
+  "em_training_seconds": 87.3759,
+  "em_learned_prior": 1.9841402612813008e-05,
+  "em_learned_comparisons": [
+    {
+      "type": "jaro_winkler_at_thresholds",
+      "m_sum": 1.0
+    },
+    {
+      "type": "jaro_winkler_at_thresholds",
+      "m_sum": 1.0
+    },
+    {
+      "type": "date_of_birth_comparison",
+      "m_sum": 1.0
+    },
+    {
+      "type": "email_comparison",
+      "m_sum": 0.9897
+    },
+    {
+      "type": "jaro_winkler_at_thresholds",
+      "m_sum": 0.9922
+    }
+  ],
+  "quality": {
+    "total_records": 322203,
+    "duplicate_pairs_planted": 0,
+    "tp": 0,
+    "fp": 0,
+    "fn": 0,
+    "precision": 0.0,
+    "recall": 0.0,
+    "merge_rate": 0.0215,
+    "n_clusters": 318688,
+    "n_non_singletons": 3399,
+    "largest_cluster": 4,
+    "n_candidate_pairs": 3633,
+    "timing_seconds": {
+      "distributed_total": 7950.7846,
+      "wall_seconds": 7950.8658
+    },
+    "total_seconds": 7950.7846,
+    "records_per_second": 40.5,
+    "candidate_pairs_per_second": 0.5,
+    "fellegi_sunter_seconds_per_million_pairs": null,
+    "n_procs": 8,
+    "seed": 42,
+    "wall_seconds": 7950.9252
+  },
+  "environment": {
+    "python": "3.13.1",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "cpu": "Intel64 Family 6 Model 140 Stepping 1, GenuineIntel",
+    "threads": 8,
+    "libs": {
+      "numpy": "2.5.2",
+      "faiss": "1.15.0",
+      "sentence_transformers": "6.0.0"
+    }
+  }
+}

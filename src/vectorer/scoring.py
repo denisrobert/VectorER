@@ -662,6 +662,7 @@ class FellegiSunterScorer:
         em_convergence: float = 0.001,
         seed: Optional[int] = None,
         prior: Optional[float] = None,
+        fixed_prior: Optional[float] = None,
         extra_settings: Optional[dict] = None,
     ) -> "FellegiSunterScorer":
         """Fit ``m``/``u`` and the base prior via expectation maximisation.
@@ -676,8 +677,21 @@ class FellegiSunterScorer:
        fixed), with ``m`` renormalized per comparison at each M-step;
     4. the base prior (probability two random records match) is the
        recall-adjusted share of blocked pairs that are matches extended to the
-       total number of possible pairs, capped at 0.5 -- unless ``prior`` is
-       supplied, in which case it is used verbatim.
+       total number of possible pairs, capped at 0.5 -- unless ``prior`` or
+       ``fixed_prior`` is supplied.
+
+    Fixed-prior mode (the "calibration paradox" remedy): passing
+    ``fixed_prior=`` holds the base prior **frozen across every EM iteration**
+    (it is used in the E-step's responsibilities and never re-estimated in the
+    M-step), so only ``m`` (and not ``pi``) is learned -- the same machinery
+    Splink's fixed-prior EM uses.  This lets you sweep fixed priors x threshold
+    to find an operating point, instead of trusting EM's own (often
+    miscalibrated) prior estimate.  ``prior=`` remains the earlier behaviour:
+    EM still learns ``pi`` internally, and ``prior`` only overrides the
+    reported base rate.
+
+    Only one of ``prior`` / ``fixed_prior`` should be set; the caller may also
+    pass both only if they agree.
     """
         rng = np.random.default_rng(seed)
         rules = list(training_block_on) if training_block_on else [
@@ -717,6 +731,13 @@ class FellegiSunterScorer:
             for spec in specs
         ]
         pi = 0.5
+        # Fixed-prior mode: pi is frozen at fixed_prior for the whole EM run.
+        if fixed_prior is not None:
+            if not 0.0 < fixed_prior < 1.0:
+                raise ValueError("fixed_prior must be in (0, 1)")
+            if prior is not None and abs(prior - fixed_prior) > 1e-12:
+                raise ValueError("prior and fixed_prior disagree; set only one")
+            pi = float(fixed_prior)
         prev_pi = None
         try:
             from tqdm import tqdm
@@ -741,8 +762,11 @@ class FellegiSunterScorer:
             log_odds = log_m - log_u + np.log(pi + 1e-12) - np.log1p(-pi + 1e-12)
             r = _sigmoid(np.clip(log_odds, -50.0, 50.0))
 
-            # M-step: pi and per-comparison m (renormalized), u fixed.
-            pi_new = float(np.mean(r))
+            # M-step: per-comparison m (renormalized), u fixed; pi frozen if fixed.
+            if fixed_prior is None:
+                pi_new = float(np.mean(r))
+            else:
+                pi_new = pi
             ms_new = []
             for spec, gamma in zip(specs, gammas):
                 weights = r.copy()
@@ -767,9 +791,12 @@ class FellegiSunterScorer:
         # pi (the EM mixing proportion over the blocked set) gives the share
         # of blocked pairs that are true matches; expending that share over
         # all C(n,2) pairs yields the base rate of a random match.
+        # Fixed-prior mode returns the frozen prior verbatim.
         n_total_pairs = len(records) * (len(records) - 1) // 2
         estimated_matches = pi * n_pairs
-        if prior is None:
+        if fixed_prior is not None:
+            final_prior = float(fixed_prior)
+        elif prior is None:
             base_prior = (
                 (estimated_matches / max(float(recall), 1e-3)) / max(n_total_pairs, 1)
                 if n_total_pairs

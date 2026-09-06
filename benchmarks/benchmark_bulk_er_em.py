@@ -288,6 +288,54 @@ def cluster_quality_distributed(
     }
 
 
+def prior_sweep(
+    records: Sequence[dict],
+    gt_pairs: Sequence[tuple[int, int, int]],   # (idx_a, idx_b, is_match)
+    priors: Sequence[float],
+    taus: Sequence[float],
+    *,
+    seed: int = 42,
+    em_max_pairs: float = 100000,
+) -> dict[str, Any]:
+    """Sweep ``fit_em(fixed_prior=...)`` over ``priors`` x scoring ``taus``.
+
+    Each prior trains a scorer with the prior FROZEN (only m/u are learned --
+    the calibration-paradox remedy), and precision/recall are computed on the
+    labelled eval pairs at each ``tau`` on that scorer.  This produces an
+    operating-point surface so you can pick the best prior+threshold instead of
+    trusting EM's own (often miscalibrated) base rate.
+    """
+    import numpy as np
+
+    from vectorer.scoring import FellegiSunterScorer
+
+    comps = make_comparisons()
+    lefts = [records[a] for a, b, _ in gt_pairs]
+    rights = [records[b] for a, b, _ in gt_pairs]
+    y = np.asarray([m for _, _, m in gt_pairs], dtype=int)
+
+    rows = []
+    for prior in priors:
+        scorer = FellegiSunterScorer.from_comparisons(comps).fit_em(
+            records, training_block_on=[("first_name",), ("date_of_birth",)],
+            max_pairs=em_max_pairs, recall=0.7, seed=seed,
+            fixed_prior=prior,
+        )
+        probs = scorer.score_pairs(lefts, rights)
+        for tau in taus:
+            pred = probs >= tau
+            tp = int((pred & (y == 1)).sum())
+            fp = int((pred & (y == 0)).sum())
+            fn = int((~pred & (y == 1)).sum())
+            rows.append({
+                "fixed_prior": prior,
+                "tau": tau,
+                "precision": round(tp / (tp + fp), 4) if (tp + fp) else 0.0,
+                "recall": round(tp / (tp + fn), 4) if (tp + fn) else 0.0,
+            })
+    return {"prior_sweep_rows": rows}
+
+
 def environment_block() -> dict[str, Any]:
     libs = ["numpy", "faiss", "sentence_transformers"]
     versions: dict[str, str] = {}
@@ -341,6 +389,14 @@ def main() -> None:
                         help="run the bulk dedup FS-scoring stage across N process "
                              "workers (multi-core) instead of single-process. "
                              "Use e.g. --n-procs 8 on an 8-core machine.")
+    parser.add_argument("--prior-sweep-priors", default=None,
+                        help="comma-separated fixed priors to sweep with fit_em("
+                             "fixed_prior=...) against a gt-file, e.g. "
+                             "'1e-6,1e-5,1e-4,1e-3,0.01').  When set, training runs "
+                             "once per prior and precision/recall vs tau are "
+                             "reported on the labeled eval sample.")
+    parser.add_argument("--prior-sweep-taus", default="0.5,0.7,0.85,0.9,0.99",
+                        help="comma-separated tau grid for the prior sweep")
     parser.add_argument("--output", default="results/bulk_latency_em.json")
     args = parser.parse_args()
 
@@ -386,6 +442,71 @@ def main() -> None:
     em_diagnostics = scorer.to_settings()
     print(f"EM training done in {em_seconds:.1f}s; learned prior = "
           f"{em_diagnostics['probability_two_random_records_match']:.3g}")
+
+    # --- prior sweep mode (calibration-paradox remedy) ---------------------
+    if args.prior_sweep_priors:
+        if not args.gt_file:
+            raise SystemExit("--prior-sweep-priors requires --gt-file "
+                             "(record index -> true twin base index)")
+        priors = [float(x) for x in args.prior_sweep_priors.split(",")]
+        taus = [float(x) for x in args.prior_sweep_taus.split(",")]
+        # Build labelled pairs: true (dup, base) pairs and an equal set of
+        # non-match pairs sampled from the population.
+        gt = {}
+        raw = json.loads(Path(args.gt_file).read_text(encoding="utf-8"))
+        for k, v in raw.items():
+            try:
+                gt[int(k)] = int(v)
+            except (TypeError, ValueError):
+                gt[k] = v
+        rng = random.Random(args.seed)
+        gt_pairs = []
+        for a, b in gt.items():
+            gt_pairs.append((a, b, 1))
+        # Non-matches: random index pairs not in gt.
+        n_pos = len(gt_pairs)
+        neg = 0
+        index_all = set(range(len(records)))
+        while neg < n_pos and neg < 200_000:
+            a = rng.randrange(len(records))
+            b = rng.randrange(len(records))
+            if a == b or gt.get(a) == b or gt.get(b) == a:
+                continue
+            gt_pairs.append((a, b, 0))
+            neg += 1
+        print(f"Prior sweep: {len(priors)} priors x {len(taus)} taus, "
+              f"{n_pos} positive + {neg} negative eval pairs")
+        sweep = prior_sweep(
+            records, gt_pairs, priors, taus, seed=args.seed,
+            em_max_pairs=args.em_max_pairs,
+        )
+        results = {
+            "parameters": {
+                "mode": "prior_sweep",
+                "data_file": args.data_file,
+                "gt_file": args.gt_file,
+                "training_subsample": len(em_data),
+                "em_max_pairs": args.em_max_pairs,
+                "em_seed": em_seed,
+                "priors": priors,
+                "taus": taus,
+                "seed": args.seed,
+            },
+            **sweep,
+            "environment": environment_block(),
+        }
+        Path(args.output).parent.mkdir(parents=True, exist_ok=True)
+        Path(args.output).write_text(json.dumps(results, indent=2), encoding="utf-8")
+        print("\nprior_sweep rows (best by F1):")
+        best = max(sweep["prior_sweep_rows"],
+                   key=lambda r: (r["precision"] + r["recall"]))  # noqa: max(...)
+        for r in sweep["prior_sweep_rows"]:
+            f1 = 2 * r["precision"] * r["recall"] / (r["precision"] + r["recall"]) if (r["precision"] + r["recall"]) else 0
+            tag = " <--" if r["tau"] == best["tau"] and r["fixed_prior"] == best["fixed_prior"] else ""
+            print(f"  prior={r['fixed_prior']:g} tau={r['tau']} "
+                  f"precision={r['precision']} recall={r['recall']} f1={f1:.3f}{tag}")
+        print(f"\nSaved prior-sweep results to {args.output}")
+        return
 
     # --- bulk dedup with the EM-trained scorer ------------------------------
     # Keep the heavy dedup tractable: option to sample the evaluation set.

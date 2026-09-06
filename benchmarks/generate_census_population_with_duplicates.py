@@ -88,6 +88,7 @@ def add_duplicates(base: list[dict], seed: int = 42) -> list[dict]:
 
     records = list(base)
     added = 0
+    gt = {}  # duplicate index -> base index
 
     def perturbed(base_record: dict) -> dict:
         # A seeded random stream per copy so perturbation choice is stable.
@@ -96,19 +97,23 @@ def add_duplicates(base: list[dict], seed: int = 42) -> list[dict]:
     # Deterministic, reproducible order over the base indices.
     for i in tqdm(range(n_base), desc="adding duplicates", unit="base"):
         if i in single_idx:
+            gt[len(records)] = i
             records.append(perturbed(base[i]))
             added += 1
         if i in double_idx:
+            gt[len(records)] = i
             records.append(perturbed(base[i]))
+            gt[len(records)] = i
             records.append(perturbed(base[i]))
             added += 2
         if i in many_idx:
             n_copies = rng.randint(DUP_MANY_MIN, DUP_MANY_MAX)
             for _ in range(n_copies):
+                gt[len(records)] = i
                 records.append(perturbed(base[i]))
             added += n_copies
 
-    return records, added
+    return records, added, gt
 
 
 def summarize(records: list[dict], n_base: int, added: int) -> None:
@@ -133,6 +138,9 @@ def main() -> None:
     parser.add_argument("--n", type=int, default=300_000)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--output", default=DEFAULT_OUTPUT)
+    parser.add_argument("--gt-output", default=None,
+                        help="optional JSON path to write the ground-truth twin map "
+                             "{duplicate_index: base_index}")
     args = parser.parse_args()
 
     print(f"Generating {args.n:,} census-distributed base people (seed={args.seed})...")
@@ -140,13 +148,20 @@ def main() -> None:
 
     print("Adding perturbed duplicates "
           f"({DUP_SINGLE:.1%} single, {DUP_DOUBLE:.2%} doubled, {DUP_MANY:.2%} many)...")
-    records, added = add_duplicates(base, seed=args.seed)
+    records, added, gt = add_duplicates(base, seed=args.seed)
 
     out = Path(args.output)
     out.parent.mkdir(parents=True, exist_ok=True)
     with out.open("w", encoding="utf-8") as fh:
         json.dump(records, fh)
     print(f"Wrote {len(records):,} records to {out}")
+
+    if args.gt_output:
+        gt_path = Path(args.gt_output)
+        gt_path.parent.mkdir(parents=True, exist_ok=True)
+        with gt_path.open("w", encoding="utf-8") as fh:
+            json.dump(gt, fh)
+        print(f"Wrote ground-truth twin map ({len(gt):,} entries) to {gt_path}")
 
     summarize(records, len(base), added)
 

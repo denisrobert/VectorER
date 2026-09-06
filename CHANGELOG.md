@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1] - 2026-09-06
+
+### Added (fixed-prior EM — the calibration-paradox remedy)
+
+- **`fit_em(fixed_prior=...)`**: holds the base prior **frozen across every EM
+  iteration** — `pi` is used in the E-step's responsibilities and never
+  re-estimated in the M-step, so only `m/u` are learned (the Splink-style
+  fixed-prior EM).  This enables sweeping prior × threshold to find an optimal
+  operating point rather than trusting EM's own often-miscalibrated base rate.
+  `prior=` remains the previous behaviour (EM still learns `pi`; the reported
+  base rate is overridden).  Passing both with different values raises.
+- **`benchmark_bulk_er_em.py --prior-sweep-priors/--prior-sweep-taus`**: trains
+  a scorer per fixed prior over a labelled eval sample (`--gt-file`) and reports
+  precision/recall (and F1) across the tau grid — the operating-point surface
+  proposed to resolve the calibration paradox (verified: recall 0.70→0.755 at
+  precision 1.0 by sweeping prior).
+- **`generate_census_population_with_duplicates.py --gt-output`**: writes the
+  exact `{duplicate_index: base_index}` ground-truth map so recovery metrics are
+  measurable (also `.gitignore`d).
+
 ## [0.5.0] - 2026-09-06
 
 ### Added
@@ -275,6 +295,7 @@ Initial public release of `vectorer` on PyPI.
 - **Documentation**: `README.md`, `.docs/architecture.md`, `.docs/user_guide.md`,
   `.source-papers/`.
 
+[0.5.1]: https://github.com/denisrobert/VectorER
 [0.5.0]: https://github.com/denisrobert/VectorER
 [0.4.1]: https://github.com/denisrobert/VectorER
 [0.4.0]: https://github.com/denisrobert/VectorER

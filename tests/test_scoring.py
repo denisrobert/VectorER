@@ -296,3 +296,38 @@ def test_import_splink_scorer_rejects_missing_or_mismatched():
     }
     with pytest.raises(ValueError, match="levels"):
         import_splink_scorer(splink, native)
+
+
+def test_fit_em_fixed_prior_freezes_base_rate():
+    from vectorer.comparisons import make_comparison
+
+    records = []
+    for i in range(8):
+        records.append({'first_name': f'n{i}', 'last_name': 's',
+                        'date_of_birth': f'19{i:02d}-01-01', 'email': None, 'address': None})
+        records.append({'first_name': f'n{i}', 'last_name': 's',
+                        'date_of_birth': f'19{i:02d}-01-01', 'email': None, 'address': None})
+    comps = [make_comparison('jaro_winkler_at_thresholds', col_name='first_name')]
+
+    learned = FellegiSunterScorer.from_comparisons(comps).fit_em(
+        records, training_block_on=[('first_name',)], max_iterations=5, seed=7)
+    fixed = FellegiSunterScorer.from_comparisons(comps).fit_em(
+        records, training_block_on=[('first_name',)], max_iterations=5, seed=7,
+        fixed_prior=0.01)
+
+    assert learned.to_settings()['probability_two_random_records_match'] != 0.01
+    assert fixed.to_settings()['probability_two_random_records_match'] == pytest.approx(0.01)
+    x = {'first_name': 'n0', 'last_name': 's', 'date_of_birth': '1900-01-01',
+         'email': None, 'address': None}
+    assert fixed.score(x, dict(x)) == 1.0  # idempotent ident match still holds
+
+
+def test_fit_em_fixed_prior_and_prior_disagree_raises():
+    from vectorer.comparisons import make_comparison
+
+    records = [{'first_name': 'a', 'last_name': 'b', 'date_of_birth': '2000-01-01',
+                'email': None, 'address': None}] * 4
+    comps = [make_comparison('jaro_winkler_at_thresholds', col_name='first_name')]
+    with pytest.raises(ValueError, match='disagree'):
+        FellegiSunterScorer.from_comparisons(comps).fit_em(
+            records, training_block_on=[('first_name',)], fixed_prior=0.01, prior=0.5, seed=1)

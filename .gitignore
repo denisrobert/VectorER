@@ -31,3 +31,4 @@ examples/output/
 # Large regeneratable benchmark populations
 benchmarks/population.json
 benchmarks/population_with_duplicates.json
+benchmarks/population_gt.json

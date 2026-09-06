@@ -17,7 +17,7 @@ The Fellegi-Sunter comparison set (:mod:`vectorer.comparisons`) is extensible
 and spans the standard attribute-comparison families of record linkage.
 """
 
-__version__ = "0.5.0"
+__version__ = "0.5.1"
 
 from .records import (
     DictParser,
