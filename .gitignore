@@ -27,3 +27,6 @@ examples/output/
 # Non-shareable files
 .source-papers/
 .datasets/
+
+# Large Files to regenerate
+benchmarks/population.json
