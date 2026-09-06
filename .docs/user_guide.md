@@ -1007,6 +1007,21 @@ S₀, and use the resulting `m/u` on the full set S [20]. This **reweights the
 *real* agreement-pattern distribution** — it keeps the actual mix of fuzzy,
 near-match patterns in your data and only reduces the non-match mass.
 
+**Recalibrate the prior after enrichment — Yancey does not.** The EM estimate
+of `Pr(C₁)` (the match proportion) is the match share **in the enriched subset
+S₀**, not in the full set S — and S₀ is deliberately inflated by keeping
+high-weight pairs and dropping low-weight (mostly non-match) pairs. Yancey's
+paper explicitly re-estimates **only the non-match classes** when extending to
+S ("…we need to re-estimate the class proportions Pr(C₂) and Pr(C₃)…"), and
+**leaves Pr(C₁) where EM put it**. That is fine for *weight-based ranking*
+(Pr(C₁) cancels into the threshold), but **for a posterior/threshold system
+like this framework, Pr(C₁) enters the posterior directly** — an inflated
+enriched-set prior biases the posterior upward, so a fixed `tau` no longer
+means what you intend. **You must therefore recalibrate the prior to the full
+set** (estimate the true match share on S — from the model's own prediction on
+a full-file sample, from a labelled subset, or from domain knowledge) and hold
+it with `fit_em(fixed_prior=...)` rather than inheriting the enriched-set Pr(C₁).
+
 **Injected perturbed duplicates.** Generate synthetic duplicates (e.g.
 `population_with_duplicates.json`: a perturbed copy of the base record) and add
 them to the training population. This raises the match share by **imputing

@@ -827,6 +827,51 @@ class FellegiSunterScorer:
             threshold=self.threshold,
         )
 
+    def recalibrate_prior(
+        self,
+        records: Sequence[dict],
+        *,
+        sample_size: int = 200_000,
+        seed: Optional[int] = None,
+        recall: float = 1.0,
+    ) -> "FellegiSunterScorer":
+        """Recover the **full-set** match prior for a model trained on an
+        enriched subset.
+
+        After match-enrichment EM (Yancey 2004), the EM estimate of ``Pr(C1)``
+        reflects the match share of the enriched training subset, not the full
+        population -- Yancey recalibrates only the non-match classes (C2/C3)
+        and leaves the match prior un-adjusted.  In a posterior/threshold
+        system the match prior enters the posterior directly, so an inflated
+        prior biases every posterior.
+
+        This method re-estimates the prior on the full population: it draws a
+        ``sample_size`` uniform pair sample from ``records``, scores it with the
+        trained ``m/u``, and sets the match prior to the model's own expected
+        match rate (optionally divided by ``recall`` to compensate for the
+        blocking that produced the candidate pairs).  Use the resulting scorer's
+        ``fixed_prior`` (or the prior-sweep) at the corrected prior.
+        """
+        rng = np.random.default_rng(seed)
+        n = len(records)
+        pairs = list(_sample_all_pairs(n, int(sample_size), rng))
+        if not pairs:
+            return self
+        left = [records[i] for i, _ in pairs]
+        right = [records[j] for _, j in pairs]
+        probs = self.score_pairs(left, right) if hasattr(self, "score_pairs") else None
+        if probs is None:
+            return self
+        # Probability a random *pair* is a match = mean posterior over the
+        # uniform pair sample (the base rate the model believes).
+        base_rate = float(np.mean(probs))
+        full_prior = np.clip(base_rate / max(float(recall), 1e-3), 1e-8, 0.5)
+        new_settings = self.to_settings()
+        new_settings["probability_two_random_records_match"] = float(full_prior)
+        return self.__class__.from_settings(
+            new_settings, threshold=self.threshold,
+        )
+
     # -- pair sources -------------------------------------------------------
 
     def _blocked_pairs(

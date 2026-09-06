@@ -331,3 +331,29 @@ def test_fit_em_fixed_prior_and_prior_disagree_raises():
     with pytest.raises(ValueError, match='disagree'):
         FellegiSunterScorer.from_comparisons(comps).fit_em(
             records, training_block_on=[('first_name',)], fixed_prior=0.01, prior=0.5, seed=1)
+
+
+def test_recalibrate_prior_drops_enriched_prior():
+    from vectorer.comparisons import make_comparison
+
+    # Enriched training set: ~50% matches (every record duplicated once).
+    enriched = []
+    for i in range(20):
+        base = {'first_name': f'n{i}', 'last_name': 's', 'date_of_birth': f'19{i % 50:02d}-01-01',
+                'email': None, 'address': None}
+        enriched.append(dict(base))
+        enriched.append(dict(base))
+    comps = [make_comparison('jaro_winkler_at_thresholds', col_name='first_name')]
+    scorer = FellegiSunterScorer.from_comparisons(comps)
+    enriched_model = scorer.fit_em(enriched, training_block_on=[('first_name',)],
+                                   max_iterations=5, seed=7)
+    prior_enriched = enriched_model.to_settings()['probability_two_random_records_match']
+
+    # Recalibrate on a large, mostly-unrelated population (match share near 0).
+    full = [{'first_name': f'z{i}', 'last_name': f'w{i}', 'date_of_birth': f'19{i % 50:02d}-01-01',
+             'email': None, 'address': None} for i in range(200)]
+    cal = enriched_model.recalibrate_prior(full, sample_size=10000, seed=1)
+    prior_cal = cal.to_settings()['probability_two_random_records_match']
+    assert prior_cal < prior_enriched
+    # A truly unrelated population => prior collapses toward 0 (still > 0).
+    assert prior_cal > 0

@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`FellegiSunterScorer.recalibrate_prior(records, sample_size, seed, recall)`**:
+  after match-enrichment EM (Yancey 2004), the EM match-prior reflects the
+  *enriched subset*, and Yancey recalibrates only the non-match classes (C2/C3).
+  For a posterior/threshold system the match prior must be corrected to the full
+  population: this method scores a uniform full-set pair sample with the trained
+  `m/u`, sets the prior to the model's own expected match rate (optionally
+  recall-adjusted), and returns a scorer with the corrected prior.
+- **User guide §6.3**: added the "Recalibrate the prior after enrichment"
+  note documenting the Yancey gap and the fixed-prior remedy.
+
 ## [0.5.1] - 2026-09-06
 
 ### Added (fixed-prior EM — the calibration-paradox remedy)
