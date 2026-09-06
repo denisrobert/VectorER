@@ -993,6 +993,40 @@ because the learned prior is too small — the framework faithfully applies the
 weights; the calibration, not the machinery, is the issue. Calibrating by the
 sweep removes that failure mode.
 
+### Match enrichment vs. injected duplicates
+
+Both procedures raise the match proportion EM sees — the mechanism Yancey [20]
+proposes to make the match class detectable. But they are **not equivalent**,
+and the difference matters for calibration.
+
+**Match enrichment (Yancey's procedure, exactly).** Compute a preliminary
+matching weight for every pair from initial marginal probabilities; **keep all
+high-weight (likely-match) pairs, drop a percentage of low-weight pairs, and
+randomly sample the ambiguous middle**; run EM on this match-enriched subset
+S₀, and use the resulting `m/u` on the full set S [20]. This **reweights the
+*real* agreement-pattern distribution** — it keeps the actual mix of fuzzy,
+near-match patterns in your data and only reduces the non-match mass.
+
+**Injected perturbed duplicates.** Generate synthetic duplicates (e.g.
+`population_with_duplicates.json`: a perturbed copy of the base record) and add
+them to the training population. This raises the match share by **imputing
+patterns drawn from your perturbation function**, not from the data.
+
+**The caveat.** Injecting perturbed records **distorts the underlying
+distribution of variability in the original dataset**: synthetic duplicates
+carry the error patterns *you* baked into the perturbation function, which may
+not match how real duplicate records actually differ — over-weighting some
+agreement patterns and under-weighting others. Because EM estimates `m/u` from
+the mix of agreement patterns among the (enriched) matches, a skewed synthetic
+mix shifts the fitted fuzzy-level probabilities. **Use injected duplicates only
+when the class of errors and their relative proportion is well understood by
+looking at actual past experience** — e.g. calibrated from a clerical review of
+real near-matches — and prefer match-enrichment when you can compute a
+preliminary weight (you always can here; any default scorer suffices). If both
+are available, validate them the way the prior-sweep does: if injected data
+reproduces the same operating-point curve as enrichment on real pairs, they
+agree; otherwise trust enrichment.
+
 ### 6.4 Importing trained parameters from Splink
 
 If the **base population was already deduplicated / linked with Splink**, or a
