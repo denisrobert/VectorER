@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`benchmarks/benchmark_yancey_enrichment.py`** — benchmark that tests
+  Yancey's match-enrichment procedure for improving EM (Yancey 2004, RRS
+  #2004-01).  On the generated duplicate-bearing population it compares
+  plain EM, Yancey-enriched EM with prior recalibration, enriched m/u with a
+  fixed/swept prior, an oracle-prior arm, and default m/u on the same labelled
+  eval pairs (precision/recall/F1 across a tau grid).  Verifies that
+  enrichment rescues EM's sparse-match-class failure (recall 0.60 → 0.76), and
+  that freezing the prior at an operating value is what takes recall further
+  (F1 0.999 at prior 1e-3), confirming the prior-recalibration caveat.
+
+### Changed
+
+- **Dataset-relative default `n_canopies` in the batch pipeline**: a fixed
+  `512` default is replaced by a default resolved from the dataset size —
+  `n_canopies = max(1, len(records) // 39)` (the FAISS k-means minimum-points
+  heuristic) when the caller does not supply `n_canopies=`.  `BatchPipeline.__init__`
+  and `build_batch_pipeline` now default to `n_canopies=Optional[int] = None`;
+  the value is resolved lazily in `run()` (and in `block()` for standalone
+  use).  The canopy grid therefore scales with the number of records instead of
+  over/under-partitioning small or large datasets.  Explicit `n_canopies=` is
+  still honoured.
+
 ## [0.5.2] - 2026-09-07
 
 ### Added

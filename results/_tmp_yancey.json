@@ -1,0 +1,549 @@
+{
+  "parameters": {
+    "data_file": "benchmarks/population_with_duplicates.json",
+    "gt_file": "benchmarks/population_gt.json",
+    "n_training": 20000,
+    "n_enriched": 2730,
+    "n_eval_pairs": 4000,
+    "em_max_pairs": 30000.0,
+    "enrich_keep_frac": 0.05,
+    "fixed_prior": 0.001,
+    "seed": 42
+  },
+  "arms": {
+    "plain_em": {
+      "rows": [
+        {
+          "tau": 0.2,
+          "tp": 320,
+          "fp": 0,
+          "fn": 1680,
+          "precision": 1.0,
+          "recall": 0.16,
+          "f1": 0.2759
+        },
+        {
+          "tau": 0.4,
+          "tp": 320,
+          "fp": 0,
+          "fn": 1680,
+          "precision": 1.0,
+          "recall": 0.16,
+          "f1": 0.2759
+        },
+        {
+          "tau": 0.5,
+          "tp": 320,
+          "fp": 0,
+          "fn": 1680,
+          "precision": 1.0,
+          "recall": 0.16,
+          "f1": 0.2759
+        },
+        {
+          "tau": 0.6,
+          "tp": 320,
+          "fp": 0,
+          "fn": 1680,
+          "precision": 1.0,
+          "recall": 0.16,
+          "f1": 0.2759
+        },
+        {
+          "tau": 0.7,
+          "tp": 320,
+          "fp": 0,
+          "fn": 1680,
+          "precision": 1.0,
+          "recall": 0.16,
+          "f1": 0.2759
+        },
+        {
+          "tau": 0.8,
+          "tp": 320,
+          "fp": 0,
+          "fn": 1680,
+          "precision": 1.0,
+          "recall": 0.16,
+          "f1": 0.2759
+        },
+        {
+          "tau": 0.85,
+          "tp": 320,
+          "fp": 0,
+          "fn": 1680,
+          "precision": 1.0,
+          "recall": 0.16,
+          "f1": 0.2759
+        },
+        {
+          "tau": 0.9,
+          "tp": 320,
+          "fp": 0,
+          "fn": 1680,
+          "precision": 1.0,
+          "recall": 0.16,
+          "f1": 0.2759
+        },
+        {
+          "tau": 0.95,
+          "tp": 320,
+          "fp": 0,
+          "fn": 1680,
+          "precision": 1.0,
+          "recall": 0.16,
+          "f1": 0.2759
+        },
+        {
+          "tau": 0.99,
+          "tp": 320,
+          "fp": 0,
+          "fn": 1680,
+          "precision": 1.0,
+          "recall": 0.16,
+          "f1": 0.2759
+        }
+      ],
+      "best": {
+        "tau": 0.2,
+        "tp": 320,
+        "fp": 0,
+        "fn": 1680,
+        "precision": 1.0,
+        "recall": 0.16,
+        "f1": 0.2759
+      },
+      "meta": {
+        "prior": 0.0002142960707838719
+      }
+    },
+    "yancey_enrich": {
+      "rows": [
+        {
+          "tau": 0.2,
+          "tp": 1540,
+          "fp": 16,
+          "fn": 460,
+          "precision": 0.9897,
+          "recall": 0.77,
+          "f1": 0.8661
+        },
+        {
+          "tau": 0.4,
+          "tp": 1216,
+          "fp": 0,
+          "fn": 784,
+          "precision": 1.0,
+          "recall": 0.608,
+          "f1": 0.7562
+        },
+        {
+          "tau": 0.5,
+          "tp": 1216,
+          "fp": 0,
+          "fn": 784,
+          "precision": 1.0,
+          "recall": 0.608,
+          "f1": 0.7562
+        },
+        {
+          "tau": 0.6,
+          "tp": 1216,
+          "fp": 0,
+          "fn": 784,
+          "precision": 1.0,
+          "recall": 0.608,
+          "f1": 0.7562
+        },
+        {
+          "tau": 0.7,
+          "tp": 1216,
+          "fp": 0,
+          "fn": 784,
+          "precision": 1.0,
+          "recall": 0.608,
+          "f1": 0.7562
+        },
+        {
+          "tau": 0.8,
+          "tp": 1216,
+          "fp": 0,
+          "fn": 784,
+          "precision": 1.0,
+          "recall": 0.608,
+          "f1": 0.7562
+        },
+        {
+          "tau": 0.85,
+          "tp": 1216,
+          "fp": 0,
+          "fn": 784,
+          "precision": 1.0,
+          "recall": 0.608,
+          "f1": 0.7562
+        },
+        {
+          "tau": 0.9,
+          "tp": 1216,
+          "fp": 0,
+          "fn": 784,
+          "precision": 1.0,
+          "recall": 0.608,
+          "f1": 0.7562
+        },
+        {
+          "tau": 0.95,
+          "tp": 1216,
+          "fp": 0,
+          "fn": 784,
+          "precision": 1.0,
+          "recall": 0.608,
+          "f1": 0.7562
+        },
+        {
+          "tau": 0.99,
+          "tp": 1216,
+          "fp": 0,
+          "fn": 784,
+          "precision": 1.0,
+          "recall": 0.608,
+          "f1": 0.7562
+        }
+      ],
+      "best": {
+        "tau": 0.2,
+        "tp": 1540,
+        "fp": 16,
+        "fn": 460,
+        "precision": 0.9897,
+        "recall": 0.77,
+        "f1": 0.8661
+      },
+      "meta": {
+        "prior": 0.006161829383141837,
+        "enriched_prior": 0.011504990340692967
+      }
+    },
+    "yancey_fixedprior": {
+      "rows": [
+        {
+          "tau": 0.2,
+          "tp": 1996,
+          "fp": 0,
+          "fn": 4,
+          "precision": 1.0,
+          "recall": 0.998,
+          "f1": 0.999
+        },
+        {
+          "tau": 0.4,
+          "tp": 1996,
+          "fp": 0,
+          "fn": 4,
+          "precision": 1.0,
+          "recall": 0.998,
+          "f1": 0.999
+        },
+        {
+          "tau": 0.5,
+          "tp": 1996,
+          "fp": 0,
+          "fn": 4,
+          "precision": 1.0,
+          "recall": 0.998,
+          "f1": 0.999
+        },
+        {
+          "tau": 0.6,
+          "tp": 1993,
+          "fp": 0,
+          "fn": 7,
+          "precision": 1.0,
+          "recall": 0.9965,
+          "f1": 0.9982
+        },
+        {
+          "tau": 0.7,
+          "tp": 1993,
+          "fp": 0,
+          "fn": 7,
+          "precision": 1.0,
+          "recall": 0.9965,
+          "f1": 0.9982
+        },
+        {
+          "tau": 0.8,
+          "tp": 1992,
+          "fp": 0,
+          "fn": 8,
+          "precision": 1.0,
+          "recall": 0.996,
+          "f1": 0.998
+        },
+        {
+          "tau": 0.85,
+          "tp": 1992,
+          "fp": 0,
+          "fn": 8,
+          "precision": 1.0,
+          "recall": 0.996,
+          "f1": 0.998
+        },
+        {
+          "tau": 0.9,
+          "tp": 1987,
+          "fp": 0,
+          "fn": 13,
+          "precision": 1.0,
+          "recall": 0.9935,
+          "f1": 0.9967
+        },
+        {
+          "tau": 0.95,
+          "tp": 1986,
+          "fp": 0,
+          "fn": 14,
+          "precision": 1.0,
+          "recall": 0.993,
+          "f1": 0.9965
+        },
+        {
+          "tau": 0.99,
+          "tp": 1975,
+          "fp": 0,
+          "fn": 25,
+          "precision": 1.0,
+          "recall": 0.9875,
+          "f1": 0.9937
+        }
+      ],
+      "best": {
+        "tau": 0.2,
+        "tp": 1996,
+        "fp": 0,
+        "fn": 4,
+        "precision": 1.0,
+        "recall": 0.998,
+        "f1": 0.999
+      },
+      "meta": {
+        "prior": 0.001,
+        "fixed_prior": 0.001
+      }
+    },
+    "oracle_prior": {
+      "rows": [
+        {
+          "tau": 0.2,
+          "tp": 1710,
+          "fp": 0,
+          "fn": 290,
+          "precision": 1.0,
+          "recall": 0.855,
+          "f1": 0.9218
+        },
+        {
+          "tau": 0.4,
+          "tp": 1472,
+          "fp": 0,
+          "fn": 528,
+          "precision": 1.0,
+          "recall": 0.736,
+          "f1": 0.8479
+        },
+        {
+          "tau": 0.5,
+          "tp": 1472,
+          "fp": 0,
+          "fn": 528,
+          "precision": 1.0,
+          "recall": 0.736,
+          "f1": 0.8479
+        },
+        {
+          "tau": 0.6,
+          "tp": 1471,
+          "fp": 0,
+          "fn": 529,
+          "precision": 1.0,
+          "recall": 0.7355,
+          "f1": 0.8476
+        },
+        {
+          "tau": 0.7,
+          "tp": 1471,
+          "fp": 0,
+          "fn": 529,
+          "precision": 1.0,
+          "recall": 0.7355,
+          "f1": 0.8476
+        },
+        {
+          "tau": 0.8,
+          "tp": 1471,
+          "fp": 0,
+          "fn": 529,
+          "precision": 1.0,
+          "recall": 0.7355,
+          "f1": 0.8476
+        },
+        {
+          "tau": 0.85,
+          "tp": 1471,
+          "fp": 0,
+          "fn": 529,
+          "precision": 1.0,
+          "recall": 0.7355,
+          "f1": 0.8476
+        },
+        {
+          "tau": 0.9,
+          "tp": 1461,
+          "fp": 0,
+          "fn": 539,
+          "precision": 1.0,
+          "recall": 0.7305,
+          "f1": 0.8443
+        },
+        {
+          "tau": 0.95,
+          "tp": 1458,
+          "fp": 0,
+          "fn": 542,
+          "precision": 1.0,
+          "recall": 0.729,
+          "f1": 0.8433
+        },
+        {
+          "tau": 0.99,
+          "tp": 1298,
+          "fp": 0,
+          "fn": 702,
+          "precision": 1.0,
+          "recall": 0.649,
+          "f1": 0.7871
+        }
+      ],
+      "best": {
+        "tau": 0.2,
+        "tp": 1710,
+        "fp": 0,
+        "fn": 290,
+        "precision": 1.0,
+        "recall": 0.855,
+        "f1": 0.9218
+      },
+      "meta": {
+        "prior": 4.277439178234785e-07,
+        "true_prior": 4.3e-07
+      }
+    },
+    "default_mu": {
+      "rows": [
+        {
+          "tau": 0.2,
+          "tp": 2000,
+          "fp": 0,
+          "fn": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        {
+          "tau": 0.4,
+          "tp": 2000,
+          "fp": 0,
+          "fn": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        {
+          "tau": 0.5,
+          "tp": 2000,
+          "fp": 0,
+          "fn": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        {
+          "tau": 0.6,
+          "tp": 2000,
+          "fp": 0,
+          "fn": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        {
+          "tau": 0.7,
+          "tp": 2000,
+          "fp": 0,
+          "fn": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        {
+          "tau": 0.8,
+          "tp": 2000,
+          "fp": 0,
+          "fn": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        {
+          "tau": 0.85,
+          "tp": 2000,
+          "fp": 0,
+          "fn": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        {
+          "tau": 0.9,
+          "tp": 2000,
+          "fp": 0,
+          "fn": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        {
+          "tau": 0.95,
+          "tp": 2000,
+          "fp": 0,
+          "fn": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        {
+          "tau": 0.99,
+          "tp": 2000,
+          "fp": 0,
+          "fn": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      ],
+      "best": {
+        "tau": 0.2,
+        "tp": 2000,
+        "fp": 0,
+        "fn": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0
+      },
+      "meta": {
+        "prior": 0.0001
+      }
+    }
+  },
+  "note": "Yancey record-level enrichment; prior recalibration via recalibrate_prior or fixed_prior."
+}
