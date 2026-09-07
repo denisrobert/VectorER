@@ -357,3 +357,69 @@ def test_recalibrate_prior_drops_enriched_prior():
     assert prior_cal < prior_enriched
     # A truly unrelated population => prior collapses toward 0 (still > 0).
     assert prior_cal > 0
+
+
+def test_recalibrate_prior_yancey_uses_count_ratio():
+    from vectorer.comparisons import make_comparison
+
+    enriched = []
+    for i in range(20):
+        base = {'first_name': f'n{i}', 'last_name': 's', 'date_of_birth': f'19{i % 50:02d}-01-01',
+                'email': None, 'address': None}
+        enriched.append(dict(base))
+        enriched.append(dict(base))
+    comps = [make_comparison('jaro_winkler_at_thresholds', col_name='first_name')]
+    model = FellegiSunterScorer.from_comparisons(comps).fit_em(
+        enriched, training_block_on=[('first_name',)], max_iterations=5, seed=7)
+    # fit_em records the enriched EM metadata needed for Yancey's correction.
+    assert model._em is not None and model._em["n_pairs"] > 0
+
+    full = [{'first_name': f'z{i}', 'last_name': f'w{i}', 'date_of_birth': f'19{i % 50:02d}-01-01',
+             'email': None, 'address': None} for i in range(200)]
+    cal = model.recalibrate_prior(full, method="yancey")
+    pi, n0 = model._em["pi"], model._em["n_pairs"]
+    n = len(full)
+    expected = (pi * n0) / (n * (n - 1) / 2)
+    assert cal.to_settings()['probability_two_random_records_match'] == pytest.approx(expected)
+    # Deterministic: no sampling, so seed must not matter.
+    cal2 = model.recalibrate_prior(full, method="yancey", seed=999999)
+    assert (cal2.to_settings()['probability_two_random_records_match']
+            == cal.to_settings()['probability_two_random_records_match'])
+
+
+def test_recalibrate_prior_empirical_resamples():
+    from vectorer.comparisons import make_comparison
+
+    enriched = []
+    for i in range(20):
+        base = {'first_name': f'n{i}', 'last_name': 's', 'date_of_birth': f'19{i % 50:02d}-01-01',
+                'email': None, 'address': None}
+        enriched.append(dict(base))
+        enriched.append(dict(base))
+    comps = [make_comparison('jaro_winkler_at_thresholds', col_name='first_name')]
+    model = FellegiSunterScorer.from_comparisons(comps).fit_em(
+        enriched, training_block_on=[('first_name',)], max_iterations=5, seed=7)
+    full = [{'first_name': f'z{i}', 'last_name': f'w{i}', 'date_of_birth': f'19{i % 50:02d}-01-01',
+             'email': None, 'address': None} for i in range(200)]
+    y = model.recalibrate_prior(full, method="yancey")
+    e = model.recalibrate_prior(full, method="empirical", sample_size=5000, seed=1)
+    # Both drop the enriched prior, but the empirical resample depends on
+    # scoring draws (its own value), while yancey is the deterministic ratio.
+    assert e.to_settings()['probability_two_random_records_match'] < model.prior
+    assert (y.to_settings()['probability_two_random_records_match']
+            != e.to_settings()['probability_two_random_records_match'])
+
+
+def test_recalibrate_prior_yancey_requires_em_metadata():
+    from vectorer.comparisons import make_comparison
+
+    comps = [make_comparison('jaro_winkler_at_thresholds', col_name='first_name')]
+    # A plain scorer never ran fit_em => no EM metadata.
+    plain = FellegiSunterScorer.from_comparisons(comps)
+    full = [{'first_name': f'z{i}', 'last_name': 'w', 'date_of_birth': '2000-01-01',
+             'email': None, 'address': None} for i in range(10)]
+    with pytest.raises(ValueError, match="fit_em"):
+        plain.recalibrate_prior(full, method="yancey")
+    # Unknown method is rejected too.
+    with pytest.raises(ValueError, match="unknown recalibrate_prior method"):
+        plain.recalibrate_prior(full, method="bogus")

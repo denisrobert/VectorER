@@ -21,6 +21,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`recalibrate_prior(method=...)`**: the prior recovery after match-enrichment
+  EM now takes a ``method`` switch.  ``method="yancey"`` (default) implements
+  the paper's count-ratio correction (Yancey 2004 §2.4): the full-set prior is
+  ``pi * |S0| / |S|`` — the enriched EM mixing share ``pi`` times the enriched
+  blocked-pair count ``|S0|`` (recorded by ``fit_em``), scaled to the full pair
+  domain ``|S| = C(n, 2)``.  This is deterministic and free (no scoring pass).
+  ``method="empirical"`` preserves the previous behaviour: score a uniform
+  full-set pair sample with the trained ``m/u`` and set the prior to the model's
+  own expected match rate.  ``fit_em`` now records the mixing share and blocked
+  pair count on the returned scorer (carried through ``to_settings``/``from_settings``);
+  ``method="yancey"`` raises ``ValueError`` when that metadata is absent.
+
 - **Dataset-relative default `n_canopies` in the batch pipeline**: a fixed
   `512` default is replaced by a default resolved from the dataset size —
   `n_canopies = max(1, len(records) // 39)` (the FAISS k-means minimum-points

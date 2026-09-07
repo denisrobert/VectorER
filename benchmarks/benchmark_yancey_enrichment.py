@@ -16,7 +16,10 @@ on the *same* labelled evaluation pairs:
 * ``yancey_enrich``     -- record-level match-enrichment: keep records of the
                          highest-weight pairs, fit_em on the enriched subset,
                          then `recalibrate_prior(records)` corrects the
-                         inflated enriched-set prior back to the full set.
+                         inflated enriched-set prior back to the full set
+                         (``--recalibration-method`` picks the paper's |S0|/|S|
+                         count-ratio correction -- the default -- or the
+                         empirical full-set posterior resample).
 * ``yancey_fixedprior`` -- same enriched m/u, but the prior is FROZEN at a
                          swept value (`fixed_prior=`) instead of EM's own.
 * ``oracle_prior``      -- enriched m/u with the TRUE full-set match proportion
@@ -73,10 +76,11 @@ def prf(y: np.ndarray, probs: np.ndarray, tau: float) -> dict:
     tp = int((pred & (y == 1)).sum())
     fp = int((pred & (y == 0)).sum())
     fn = int((~pred & (y == 1)).sum())
+    tn = int((~pred & (y == 0)).sum())
     p = tp / (tp + fp) if tp + fp else 0.0
     r = tp / (tp + fn) if tp + fn else 0.0
     f1 = 2 * p * r / (p + r) if (p + r) else 0.0
-    return {"tau": tau, "tp": tp, "fp": fp, "fn": fn,
+    return {"tau": tau, "tp": tp, "fp": fp, "fn": fn, "tn": tn,
             "precision": round(p, 4), "recall": round(r, 4), "f1": round(f1, 4)}
 
 
@@ -115,6 +119,11 @@ def main():
                         help="fraction of highest-weight pairs kept for enrichment")
     parser.add_argument("--fixed-prior", type=float, default=1e-3,
                         help="frozen prior used by the yancey_fixedprior arm")
+    parser.add_argument("--recalibration-method", choices=["yancey", "empirical"],
+                        default="yancey",
+                        help="prior recovery after enrichment EM: 'yancey' "
+                             "(paper's |S0|/|S| count-ratio correction, default) "
+                             "or 'empirical' (full-set posterior resample)")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--output", default="results/yancey_enrichment.json")
     args = parser.parse_args()
@@ -134,23 +143,33 @@ def main():
     print(f"training pool: {len(train):,} records")
 
     # ---- labelled evaluation pairs ----------------------------------------
+    # Positives: ground-truth (twin, base) pairs.  Negatives must be pairs a
+    # correct model must NOT match.  Random index-vs-index records can't serve:
+    # the synthetic population's tiny name grid makes any two population
+    # records near-duplicates, so a working pipeline would (correctly) match
+    # them.  Generate fresh people whose identity is disjoint from the
+    # population and pair each with a random index record (see
+    # benchmark_data.build_unrelated_negatives).
+    from benchmark_data import build_unrelated_negatives
+
     gt_items = list(gt.items())
     rng2.shuffle(gt_items)
+    n_pos = args.n_eval_pairs // 2
     ev = []
     for a, b in gt_items:
-        if len(ev) >= args.n_eval_pairs // 2:
+        if len(ev) >= n_pos:
             break
         ev.append((records[a], records[b], 1))
-    while len(ev) < args.n_eval_pairs:
-        a = rng2.randrange(n)
-        b = rng2.randrange(n)
-        if a == b:
-            continue
-        ev.append((records[a], records[b], 0))
+    n_neg = args.n_eval_pairs - len(ev)
+    ev_neg = build_unrelated_negatives(records, n_neg, args.seed + 11,
+                                       pool_factor=4, pair_left_record=True)
+    for left, right in ev_neg:
+        ev.append((left, right, 0))
     ev_left = [x[0] for x in ev]
     ev_right = [x[1] for x in ev]
     y = np.asarray([x[2] for x in ev], dtype=int)
-    print(f"eval: {len(ev)} pairs ({int((y==1).sum())} pos, {int((y==0).sum())} neg)")
+    print(f"eval: {len(ev)} pairs ({int((y==1).sum())} pos, {int((y==0).sum())} neg, "
+          f"negatives generated disjoint from the population)")
 
     base = FellegiSunterScorer.from_comparisons(make_comparisons(), threshold=0.85)
 
@@ -194,7 +213,7 @@ def main():
                          max_pairs=args.em_max_pairs, recall=0.7, seed=args.seed)
         enriched_prior_holder["enriched_prior"] = sc.to_settings()[
             "probability_two_random_records_match"]
-        recal = sc.recalibrate_prior(records,
+        recal = sc.recalibrate_prior(records, method=args.recalibration_method,
                                      sample_size=min(args.em_max_pairs, 200_000),
                                      seed=args.seed)
         return recal, dict(enriched_prior_holder)
@@ -230,7 +249,9 @@ def main():
             "n_training": len(train), "n_enriched": len(enriched),
             "n_eval_pairs": len(ev), "em_max_pairs": args.em_max_pairs,
             "enrich_keep_frac": args.enrich_keep_frac,
-            "fixed_prior": args.fixed_prior, "seed": args.seed,
+            "fixed_prior": args.fixed_prior,
+            "recalibration_method": args.recalibration_method,
+            "seed": args.seed,
         },
         "arms": results,
         "note": "Yancey record-level enrichment; prior recalibration via "

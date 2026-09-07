@@ -210,6 +210,7 @@ class FellegiSunterScorer:
         self.comparisons = list(comparisons) if comparisons is not None else []
         self.prior = float(prior) if prior is not None else table.prior
         self.trained_settings = trained_settings
+        self._em = (trained_settings or {}).get("_em")
         # Reflexivity (idempotence of the match function): content-identical
         # pairs are forced to posterior 1.0.  Without this, a "thin" record
         # (few non-null comparison fields) would score against itself below
@@ -283,6 +284,7 @@ class FellegiSunterScorer:
             "comparisons": [c.resolved() for c in self.comparisons],
             "probability_two_random_records_match": self.prior,
             "idempotent": self.idempotent,
+            **({"_em": self._em} if self._em else {}),
         }
 
     def to_dict(self) -> dict:
@@ -819,18 +821,24 @@ class FellegiSunterScorer:
             resolved["levels"] = new_levels
             new_comparisons.append(Comparison.from_resolved(resolved))
 
-        return self.__class__.from_settings(
+        scorer = self.__class__.from_settings(
             {
                 "comparisons": [c.resolved() for c in new_comparisons],
                 "probability_two_random_records_match": float(final_prior),
             },
             threshold=self.threshold,
         )
+        # Record the EM mixing share over the blocked candidate pairs (pi) and
+        # the blocked-pair count (n_pairs = |S0|) so the Yancey count-ratio
+        # prior correction can be applied later (see recalibrate_prior).
+        scorer._em = {"pi": float(pi), "n_pairs": int(n_pairs)}
+        return scorer
 
     def recalibrate_prior(
         self,
         records: Sequence[dict],
         *,
+        method: str = "yancey",
         sample_size: int = 200_000,
         seed: Optional[int] = None,
         recall: float = 1.0,
@@ -845,12 +853,76 @@ class FellegiSunterScorer:
         system the match prior enters the posterior directly, so an inflated
         prior biases every posterior.
 
-        This method re-estimates the prior on the full population: it draws a
-        ``sample_size`` uniform pair sample from ``records``, scores it with the
-        trained ``m/u``, and sets the match prior to the model's own expected
-        match rate (optionally divided by ``recall`` to compensate for the
-        blocking that produced the candidate pairs).  Use the resulting scorer's
-        ``fixed_prior`` (or the prior-sweep) at the corrected prior.
+        ``method`` selects the correction computed on ``records`` (the full
+        population):
+
+        * ``"yancey"`` (default) -- the paper's count-ratio correction
+          (Yancey 2004, eq. for Pr(C1): ``Pr(C1)_S = (|S0|/|S|) * Pr(C1)_S0``).
+          ``|S0|`` is the enriched blocked-pair count recorded by
+          :meth:`fit_em`, ``|S|`` is ``C(len(records), 2)`` (the full pair
+          domain), and ``Pr(C1)_S0`` is EM's mixing proportion ``pi`` over the
+          enriched blocked pairs.  This is deterministic, free (no scoring
+          pass), and matches the article's rescaling of the enriched class
+          shares to the full pair set.
+
+        * ``"empirical"`` -- resample: draw a ``sample_size`` uniform pair
+          sample from ``records``, score it with the trained ``m/u``, and set
+          the prior to the model's own expected match rate (optionally divided
+          by ``recall`` to compensate for blocking that produced candidates).
+
+        ``method="yancey"`` requires the scorer to carry EM metadata (i.e. it
+        was produced by :meth:`fit_em`); otherwise a :class:`ValueError` is
+        raised.  Use the resulting scorer's ``fixed_prior`` (or the
+        prior-sweep) at the corrected prior.
+        """
+        if method == "empirical":
+            return self._recalibrate_empirical(
+                records, sample_size=sample_size, seed=seed, recall=recall,
+            )
+        if method != "yancey":
+            raise ValueError(
+                f"unknown recalibrate_prior method {method!r}; "
+                "expected 'yancey' or 'empirical'"
+            )
+        if not self._em or "pi" not in self._em or "n_pairs" not in self._em:
+            raise ValueError(
+                "recalibrate_prior(method='yancey') requires a scorer produced "
+                "by fit_em (which records the enriched EM mixing share and "
+                "blocked-pair count); use method='empirical' for a manually "
+                "constructed scorer"
+            )
+        pi = float(self._em["pi"])
+        n0 = int(self._em["n_pairs"])
+        n = len(records)
+        n_total_pairs = n * (n - 1) // 2
+        # Yancey 2004 sec 2.4: Pr(C2)_S = (|S0|/|S|) * Pr(C2) (and C3 absorbs
+        # the uncounted remainder).  For a match prior this is the share of
+        # full-pair space the enriched EM attributes to matches: pi of the
+        # |S0| blocked pairs are matches, so pi * |S0| / |S|.
+        full_prior = np.clip(
+            (pi * n0) / max(float(recall), 1e-3) / max(n_total_pairs, 1),
+            1e-8, 0.5,
+        ) if n_total_pairs else 0.0
+        new_settings = self.to_settings()
+        new_settings["probability_two_random_records_match"] = float(full_prior)
+        return self.__class__.from_settings(
+            new_settings, threshold=self.threshold,
+        )
+
+    def _recalibrate_empirical(
+        self,
+        records: Sequence[dict],
+        *,
+        sample_size: int = 200_000,
+        seed: Optional[int] = None,
+        recall: float = 1.0,
+    ) -> "FellegiSunterScorer":
+        """Empirical resample recalibration (the pre-``method`` behaviour).
+
+        Draws a ``sample_size`` uniform pair sample from ``records``, scores it
+        with the trained ``m/u``, and sets the prior to the model's own expected
+        match rate (optionally divided by ``recall`` to compensate for blocking
+        that produced the candidate pairs).
         """
         rng = np.random.default_rng(seed)
         n = len(records)
@@ -862,8 +934,6 @@ class FellegiSunterScorer:
         probs = self.score_pairs(left, right) if hasattr(self, "score_pairs") else None
         if probs is None:
             return self
-        # Probability a random *pair* is a match = mean posterior over the
-        # uniform pair sample (the base rate the model believes).
         base_rate = float(np.mean(probs))
         full_prior = np.clip(base_rate / max(float(recall), 1e-3), 1e-8, 0.5)
         new_settings = self.to_settings()

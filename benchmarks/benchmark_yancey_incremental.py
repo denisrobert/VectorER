@@ -14,7 +14,9 @@ subset, then correct the prior back to the full set.  Then it benchmarks the
 Trained-scorer arms:
 
 * ``plain_em``        -- fit_em on the full population (sparse-M baseline).
-* ``yancey_enrich``   -- enriched EM + ``recalibrate_prior`` (full-set prior).
+* ``yancey_enrich``   -- enriched EM + ``recalibrate_prior`` (full-set prior;
+  ``--recalibration-method`` picks the paper's |S0|/|S| ratio or the empirical
+  resample; default is the paper's correction).
 * ``yancey_fixedprior`` -- enriched EM m/u, prior FROZEN at ``--fixed-prior``.
 
 The incremental resolve on 300k records is parallelized across ``--n-procs``
@@ -118,6 +120,11 @@ def main():
     parser.add_argument("--em-max-pairs", type=float, default=80_000)
     parser.add_argument("--enrich-keep-frac", type=float, default=0.05)
     parser.add_argument("--fixed-prior", type=float, default=1e-3)
+    parser.add_argument("--recalibration-method", choices=["yancey", "empirical"],
+                        default="yancey",
+                        help="prior recovery after enrichment EN: 'yancey' "
+                             "(paper's |S0|/|S| count-ratio correction, default) "
+                             "or 'empirical' (full-set posterior resample)")
     parser.add_argument("--k", type=int, default=20)
     parser.add_argument("--tau", type=float, default=0.85)
     parser.add_argument("--n-procs", type=int, default=8,
@@ -158,7 +165,8 @@ def main():
                          max_pairs=args.em_max_pairs, recall=0.7, seed=args.seed,
                          fixed_prior=fixed_prior)
         if recalc and fixed_prior is None:
-            sc = sc.recalibrate_prior(records, sample_size=min(int(args.em_max_pairs), 200_000),
+            sc = sc.recalibrate_prior(records, method=args.recalibration_method,
+                                      sample_size=min(int(args.em_max_pairs), 200_000),
                                       seed=args.seed)
         return sc
 
@@ -269,7 +277,8 @@ def main():
             "n_records": n, "n_training": len(train), "n_enriched": len(enriched),
             "em_max_pairs": args.em_max_pairs,
             "enrich_keep_frac": args.enrich_keep_frac,
-            "fixed_prior": args.fixed_prior, "k": args.k, "tau": args.tau,
+            "fixed_prior": args.fixed_prior,
+            "recalibration_method": args.recalibration_method, "k": args.k, "tau": args.tau,
             "n_procs": args.n_procs, "n_queries": args.n_queries,
             "n_eval_twins": args.n_eval_twins, "n_eval_neg": args.n_eval_neg,
             "seed": args.seed,
