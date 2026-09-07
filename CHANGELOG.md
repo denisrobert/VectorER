@@ -18,6 +18,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   enrichment rescues EM's sparse-match-class failure (recall 0.60 → 0.76), and
   that freezing the prior at an operating value is what takes recall further
   (F1 0.999 at prior 1e-3), confirming the prior-recalibration caveat.
+- **Benchmark eval-set validity — genuinely disjoint negatives + full
+  confusion matrix** — both the yancey enrichment and incremental benchmarks
+  previously drew their non-match eval pairs as *random index-vs-index pairs*,
+  which are invalid in this synthetic population: the tiny name grid makes any
+  two population records near-duplicates, so a working pipeline would
+  (correctly) match them.  They now use
+  ``benchmark_data.build_unrelated_negatives`` — freshly generated census-
+  distributed people whose ``(first, last, dob)`` identity is disjoint from the
+  population (colliding DOBs shifted +5 days, colliding emails nulled) — so a
+  correct resolver must *not* match them, and the precision/F1 numbers are
+  meaningful again.  The enrichment benchmark's ``prf`` now also emits the
+  full 2x2 confusion matrix (``tp``/``fp``/``fn``/``tn``) per tau.
 
 ### Changed
 
@@ -32,11 +44,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   collapsed onto 1e-8 floors and true twins scored ~0.
 - **`fit_em` base-prior estimate** — the reported prior is now the model's own
   self-consistent match rate over a **uniform pair sample** (a fixed-point
-  solve of ``pi = mean(posterior(pi))`` on precomputed per-pair evidence, with
-  a boundary guard that falls back to the evidence-positive share when the
-  iteration hits the spurious ``1.0`` fixed point), not the blocked-pool `pi`
-  extrapolated to ``C(n,2)`` and not a flat-``0.5``-prior posterior mean
-  (both of which systematically overstate the base rate).  The `pi` used
+  solve of ``pi = mean(posterior(pi))`` on precomputed per-pair evidence; the
+  convergence test runs in logit space, which contracts faster in the slow
+  near-boundary regime).  A **per-iterate trajectory boundary guard** falls
+  back to the evidence-positive share ``mean(ev > 0)`` the moment the iterate
+  is pushed past ``0.9`` and keeps climbing — so a pool whose m/u make ``mean
+  (log-odds) > 0`` cannot run the prior to the spurious ``1.0`` fixed point,
+  regardless of where it would have converged.  Replaces both the blocked-pool
+  ``pi`` extrapolation to ``C(n,2)`` and the flat-``0.5``-prior posterior mean
+  (both of which systematically overstate the base rate).  The ``pi`` used
   inside the EM M-step is also now estimated from **evidence-only**
   responsibilities (``sigmoid(sum log m/u)`` without the ``logit(pi)`` term),
   removing the self-reinforcing ``pi -> 1`` runaway of the classic formulation.
