@@ -296,6 +296,7 @@ def prior_sweep(
     *,
     seed: int = 42,
     em_max_pairs: float = 100000,
+    neg_pairs: Sequence[tuple[dict, dict]] | None = None,
 ) -> dict[str, Any]:
     """Sweep ``fit_em(fixed_prior=...)`` over ``priors`` x scoring ``taus``.
 
@@ -304,6 +305,11 @@ def prior_sweep(
     labelled eval pairs at each ``tau`` on that scorer.  This produces an
     operating-point surface so you can pick the best prior+threshold instead of
     trusting EM's own (often miscalibrated) base rate.
+
+    ``gt_pairs`` give positives as ``(idx_a, idx_b)`` into ``records``.
+    ``neg_pairs``, when given, are explicit ``(record_a, record_b)`` pairs that
+    must NOT match (random index-vs-index pairs are unusable in this synthetic
+    population -- any two index records are near-duplicates).
     """
     import numpy as np
 
@@ -312,7 +318,12 @@ def prior_sweep(
     comps = make_comparisons()
     lefts = [records[a] for a, b, _ in gt_pairs]
     rights = [records[b] for a, b, _ in gt_pairs]
-    y = np.asarray([m for _, _, m in gt_pairs], dtype=int)
+    y = [m for _, _, m in gt_pairs]
+    for a, b in neg_pairs or []:
+        lefts.append(a)
+        rights.append(b)
+        y.append(0)
+    y = np.asarray(y, dtype=int)
 
     rows = []
     for prior in priors:
@@ -400,7 +411,7 @@ def main() -> None:
     parser.add_argument("--output", default="results/bulk_latency_em.json")
     args = parser.parse_args()
 
-    from benchmark_data import load_records, require_compared_fields
+    from benchmark_data import build_unrelated_negatives, load_records, require_compared_fields
 
     print(f"Loading dataset from {args.data_file} ...")
     records = load_records(args.data_file, key=args.data_key)
@@ -463,22 +474,26 @@ def main() -> None:
         gt_pairs = []
         for a, b in gt.items():
             gt_pairs.append((a, b, 1))
-        # Non-matches: random index pairs not in gt.
+        # Non-matches: pairs (index_record, genuinely-unrelated_record) so a
+        # correct model must NOT match them.  Random index records can't serve
+        # as negatives -- the synthetic population's tiny name grid makes any
+        # two index records near-duplicates, so a working pipeline would
+        # (correctly) match them.
         n_pos = len(gt_pairs)
-        neg = 0
-        index_all = set(range(len(records)))
-        while neg < n_pos and neg < 200_000:
-            a = rng.randrange(len(records))
-            b = rng.randrange(len(records))
-            if a == b or gt.get(a) == b or gt.get(b) == a:
-                continue
-            gt_pairs.append((a, b, 0))
-            neg += 1
+        neg_pairs = build_unrelated_negatives(
+            records, n_pos, args.seed + 11, pool_factor=4,
+            pair_left_record=True, rng=rng,
+        )
+        if len(neg_pairs) < n_pos:
+            raise RuntimeError(
+                f"generated only {len(neg_pairs)} unrelated negatives (wanted {n_pos}); "
+                f"increase --data-file population or lower the duplicate fraction"
+            )
         print(f"Prior sweep: {len(priors)} priors x {len(taus)} taus, "
-              f"{n_pos} positive + {neg} negative eval pairs")
+              f"{n_pos} positive + {len(neg_pairs)} negative eval pairs")
         sweep = prior_sweep(
-            records, gt_pairs, priors, taus, seed=args.seed,
-            em_max_pairs=args.em_max_pairs,
+            records, gt_pairs, priors, taus, seed=args.seed, em_max_pairs=args.em_max_pairs,
+            neg_pairs=neg_pairs,
         )
         results = {
             "parameters": {

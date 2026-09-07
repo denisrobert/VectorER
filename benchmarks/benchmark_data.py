@@ -20,6 +20,7 @@ present, optionally ``None``; provide a real dataset with those fields.
 from __future__ import annotations
 
 import json
+import random
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -65,6 +66,58 @@ def load_records(path: str, key: str | None = None) -> list[dict]:
         raise ValueError(f"{p} must contain a list of records or an object with a records list")
 
     raise ValueError(f"unsupported data-file extension {p.suffix!r}; use .jsonl or .json")
+
+
+def build_unrelated_negatives(
+    records: Sequence[Mapping[str, Any]],
+    n_neg: int,
+    seed: int,
+    *,
+    pool_factor: int = 20,
+    pair_left_record: bool = False,
+    rng: random.Random | None = None,
+) -> list[dict] | list[tuple[dict, dict]]:
+    """Generate fresh census-distributed identities disjoint from ``records``.
+
+    The synthetic population's tiny name grid makes any two population records
+    near-duplicates, so real index records cannot serve as non-match negatives:
+    a working pipeline would (correctly) match them.  This instead generates
+    brand-new people whose full identity ``(first_name, last_name, date_of_birth)``
+    is disjoint from the population -- shifting candidate DOBs that collide with
+    a population DOB by +5 days and nulling colliding emails, so no blocker or
+    attribute comparison can spuriously match them.
+
+    With ``pair_left_record`` set, each fresh negative is paired with a random
+    population record and tuples ``(record_a, unrelated_record)`` are returned
+    (for record-pair scoring where both sides must live in ``records``);
+    otherwise the bare unrelated records are returned.
+    """
+    import datetime as _dt
+
+    from generate_census_population import PopulationConfig as _PC
+    from generate_census_population import generate as _gen_census
+
+    _rng = rng if rng is not None else random.Random(seed)
+    ref_names = {(r["first_name"], r["last_name"], r["date_of_birth"]) for r in records}
+    ref_dobs = {r["date_of_birth"] for r in records}
+    ref_emails = {r["email"] for r in records if r["email"]}
+    pool = _gen_census(_PC(n=max(n_neg * pool_factor, 2000), seed=seed))
+    out: list[dict] = []
+    for cand in pool:
+        if len(out) >= n_neg:
+            break
+        nc = dict(cand)
+        if (nc["first_name"], nc["last_name"], nc["date_of_birth"]) in ref_names:
+            continue
+        if nc["date_of_birth"] in ref_dobs:
+            nc["date_of_birth"] = (_dt.date.fromisoformat(nc["date_of_birth"])
+                                   + _dt.timedelta(days=5)).isoformat()
+        if nc.get("email") in ref_emails:
+            nc["email"] = None
+        out.append(nc)
+    if pair_left_record:
+        return [(records[_rng.randrange(len(records))], nc) for nc in out]
+    return out
 
 
 def require_compared_fields(
