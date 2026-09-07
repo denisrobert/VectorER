@@ -423,3 +423,89 @@ def test_recalibrate_prior_yancey_requires_em_metadata():
     # Unknown method is rejected too.
     with pytest.raises(ValueError, match="unknown recalibrate_prior method"):
         plain.recalibrate_prior(full, method="bogus")
+
+
+def test_fit_em_uses_fuzzy_blocking_for_perturbed_twins():
+    """Case-flipped/typ'd twins must reach the blocked training pool.
+
+    Regression: exact-string blocking on first_name never joins a perturbed
+    twin (case flip/typo) to its base, so EM's candidate pool contained
+    ~0 true matches and the learned m/u collapsed.
+    """
+    from vectorer.comparisons import make_comparison
+
+    comps = [make_comparison('jaro_winkler_at_thresholds', col_name='first_name')]
+    scorer = FellegiSunterScorer.from_comparisons(comps)
+    # A base record + a case-flipped twin (the dominant perturbation).
+    records = []
+    for i in range(40):
+        records.append({'first_name': f'Jessica{i}', 'last_name': f'Smith{i}',
+                        'date_of_birth': f'19{i % 50:02d}-01-01', 'email': None,
+                        'address': None})
+        records.append({'first_name': f'jessicA{i}', 'last_name': f'Smith{i}',
+                        'date_of_birth': f'19{i % 50:02d}-01-01', 'email': None,
+                        'address': None})
+    blocked = scorer._blocked_pairs(records, [('first_name',)], 10000,
+                                    np.random.default_rng(0))
+    # The exact-identical base names collide AND the case-flipped twins collide
+    # (they map into the same fuzzy trigram bucket to the same base).
+    assert len(blocked) > 0
+    # At least one blocked pair joins index 0 (a base) with index 1 (its case-
+    # flipped twin) or vice versa.
+    joined_twin = any(
+        {a, b} == {2 * i, 2 * i + 1} for a, b in blocked for i in range(40)
+    )
+    assert joined_twin
+
+
+def test_fit_em_pi_is_bounded_below_one():
+    """The blocked-pair match share must not run away to 1.0 even when the
+    candidate pool is dominated by same-name non-matches."""
+    from vectorer.comparisons import make_comparison
+
+    comps = [make_comparison('jaro_winkler_at_thresholds', col_name='first_name')]
+    scorer = FellegiSunterScorer.from_comparisons(comps)
+    records = []
+    for i in range(100):
+        base = {'first_name': f'Name{i}', 'last_name': 'Same',
+                'date_of_birth': f'19{i % 50:02d}-01-01',
+                'email': f'u{i}@example.com', 'address': f'{i} Main St'}
+        records.append(dict(base))
+        records.append(dict(base))
+    trained = scorer.fit_em(records, training_block_on=[('first_name',)],
+                            max_iterations=10, seed=3)
+    # pi is clipped away from exactly 1.0.
+    assert trained._em["pi"] < 1.0
+    # The uniform-posterior prior is finite and in (0, 1).
+    assert 0.0 < trained.to_settings()[
+        'probability_two_random_records_match'] < 1.0
+    # Twin posterior is high (a duplicate scores near 1).
+    q = {'first_name': 'Name7', 'last_name': 'Same', 'date_of_birth': '1907-01-01',
+         'email': 'u7@example.com', 'address': '7 Main St'}
+    assert trained.score(q, dict(q)) > 0.9
+
+
+def test_fit_em_pool_contains_true_matches_with_dob_rule():
+    """With a date_of_birth blocking rule, twins (which share DOB) reach the
+    pool even when the name rule saturates the budget."""
+    from vectorer.comparisons import make_comparison
+
+    comps = [make_comparison('jaro_winkler_at_thresholds', col_name='first_name'),
+             make_comparison('date_of_birth_comparison', col_name='date_of_birth')]
+    scorer = FellegiSunterScorer.from_comparisons(comps)
+    # 50 bases + 50 exact twins; the name rule yields many common cliques, but
+    # the DOB rule (twins share exact DOB) must still yield matches.
+    records = []
+    for i in range(50):
+        base = {'first_name': 'Common', 'last_name': f'L{i}',
+                'date_of_birth': f'19{i % 50:02d}-01-01',
+                'email': f'u{i}@ex.com', 'address': f'{i} St'}
+        records.append(dict(base))
+        records.append(dict(base))
+    blocked = scorer._blocked_pairs(records, [('first_name',), ('date_of_birth',)],
+                                    100000, np.random.default_rng(0))
+    # The DOB-exact rule ties each twin to its own base.
+    dob_twin_blocks = any(
+        {a, b} == {2 * i, 2 * i + 1} for a, b in blocked for i in range(50)
+    )
+    assert dob_twin_blocks

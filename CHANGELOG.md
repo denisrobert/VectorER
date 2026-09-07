@@ -21,6 +21,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`fit_em` candidate pool construction (`_blocked_pairs`)** — the training
+  pool now uses *fuzzy* blocking for single string columns (case/typo-flipped
+  twin values land in the same trigram bucket as their base) and *per-rule
+  budgets ordered by specificity*: high-cardinality, twin-discriminating rules
+  (e.g. `date_of_birth`) get enough of the cap to actually produce matches,
+  instead of being starved after a common-name rule saturates the budget.
+  Previously the pool contained ~0 true twins (perturbed twins never shared an
+  exact first-name string and the DOB rule never ran), so the learned m/u
+  collapsed onto 1e-8 floors and true twins scored ~0.
+- **`fit_em` base-prior estimate** — the reported prior is now the model's own
+  self-consistent match rate over a **uniform pair sample** (a fixed-point
+  solve of ``pi = mean(posterior(pi))`` on precomputed per-pair evidence, with
+  a boundary guard that falls back to the evidence-positive share when the
+  iteration hits the spurious ``1.0`` fixed point), not the blocked-pool `pi`
+  extrapolated to ``C(n,2)`` and not a flat-``0.5``-prior posterior mean
+  (both of which systematically overstate the base rate).  The `pi` used
+  inside the EM M-step is also now estimated from **evidence-only**
+  responsibilities (``sigmoid(sum log m/u)`` without the ``logit(pi)`` term),
+  removing the self-reinforcing ``pi -> 1`` runaway of the classic formulation.
+  The blocked pool is deliberately match-biased, so the old extrapolation
+  overstated the base rate by orders of magnitude; ``scorer._em`` records
+  ``pi`` (the blocked share, clipped to ``(1e-6, 1-1e-6)``) and
+  ``prior_empirical`` (the honest uniform-posterior base rate) for inspection
+  and for ``recalibrate_prior``.
 - **`recalibrate_prior(method=...)`**: the prior recovery after match-enrichment
   EM now takes a ``method`` switch.  ``method="yancey"`` (default) implements
   the paper's count-ratio correction (Yancey 2004 §2.4): the full-set prior is

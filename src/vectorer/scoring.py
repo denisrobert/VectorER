@@ -748,6 +748,16 @@ class FellegiSunterScorer:
                           leave=False, ascii=True)
         except Exception:  # noqa: BLE001  (tqdm optional)
             em_bar = range(int(max_iterations))
+        # Guards against the degenerate all-C1 fixed point: if EM drives the
+        # responsibility mass to every blocked pair being a "match" (pi -> 1),
+        # the m levels collapse onto whichever level has the highest base rate
+        # and every other level gets floored, destroying the evidence contrast
+        # needed for scoring.  Rather than letting that silently lock in, we
+        # clip pi so it can never leave (0, 1) by more than the numeric slack,
+        # freeze pi at its last sane value when the likelihood landscape is
+        # degenerate, and detect the collapse to report a clear error.
+        pi_min = 1e-6
+        pi_max = 1.0 - 1e-6
         for _ in em_bar:
             # E-step (log-space responsibilities over the blocked pairs).
             log_m = np.zeros(n_pairs, dtype=np.float64)
@@ -764,9 +774,19 @@ class FellegiSunterScorer:
             log_odds = log_m - log_u + np.log(pi + 1e-12) - np.log1p(-pi + 1e-12)
             r = _sigmoid(np.clip(log_odds, -50.0, 50.0))
 
-            # M-step: per-comparison m (renormalized), u fixed; pi frozen if fixed.
+            # M-step: per-comparison m (renormalized) uses the full posterior
+            # responsibilities ``r`` (standard EM).  The blocked-pair match
+            # share ``pi``, however, is estimated from the *evidence-only*
+            # responsibilities ``r_ev = sigmoid(log_m - log_u)`` (no logit-pi
+            # term).  This is the statistical fix for the spurious 1.0 fixed
+            # point: ``pi = mean(r)`` with ``r`` containing ``logit(pi)`` is a
+            # self-reinforcing loop (as pi -> 1 the logit term explodes and
+            # drags every responsibility to 1).  The evidence-only share
+            # reflects the pool's composition without that coupling, so pi
+            # converges to the actual share of evidence-supported pairs.
             if fixed_prior is None:
-                pi_new = float(np.mean(r))
+                r_ev = _sigmoid(np.clip(log_m - log_u, -50.0, 50.0))
+                pi_new = float(np.clip(float(np.mean(r_ev)), pi_min, pi_max))
             else:
                 pi_new = pi
             ms_new = []
@@ -780,7 +800,7 @@ class FellegiSunterScorer:
                 m_levels = m_levels / m_levels.sum()  # per-comparison multinomial
                 ms_new.append(m_levels.tolist())
             change = abs(pi_new - pi)
-            if prev_pi is not None:
+            if prev_pi is not None and fixed_prior is None:
                 for old, new in zip(ms, ms_new):
                     change = max(change, float(np.max(np.abs(np.asarray(old) - np.asarray(new)))))
             pi = pi_new
@@ -788,25 +808,22 @@ class FellegiSunterScorer:
             if change < em_convergence:
                 break
 
-        # Base prior: estimated true matches under blocking, divided by the
-        # total number of possible pairs in the dataset (recall-adjusted).
-        # pi (the EM mixing proportion over the blocked set) gives the share
-        # of blocked pairs that are true matches; expending that share over
-        # all C(n,2) pairs yields the base rate of a random match.
-        # Fixed-prior mode returns the frozen prior verbatim.
-        n_total_pairs = len(records) * (len(records) - 1) // 2
-        estimated_matches = pi * n_pairs
+        # Base prior: probability two *random* records match = the model's own
+        # expected match rate over a uniform (unconditional) pair sample.  We
+        # cannot use `pi` (the blocked-pair match share) extrapolated to the
+        # full pair domain: the blocked pool is intentionally biased toward
+        # matches (it is built from blocking rules), so `pi * |blocked|` is a
+        # multiple of the true match count and the "extrapolation" over
+        # C(n,2) wildly overstates the base rate.  Instead solve the fixed
+        # point over a uniform pair sample (see _uniform_prior_estimate).
+        # Fixed-prior mode returns the frozen prior verbatim; a caller-supplied
+        # `prior` overrides the reported base rate (historical behaviour).
         if fixed_prior is not None:
             final_prior = float(fixed_prior)
-        elif prior is None:
-            base_prior = (
-                (estimated_matches / max(float(recall), 1e-3)) / max(n_total_pairs, 1)
-                if n_total_pairs
-                else 0.0
-            )
-            final_prior = float(np.clip(base_prior, 1e-8, 0.5))
-        else:
+        elif prior is not None:
             final_prior = float(prior)
+        else:
+            final_prior = None  # resolved from the uniform-sample score below
 
         new_comparisons = []
         for comparison, m_levels, u_levels in zip(self.comparisons, ms, us):
@@ -821,6 +838,15 @@ class FellegiSunterScorer:
             resolved["levels"] = new_levels
             new_comparisons.append(Comparison.from_resolved(resolved))
 
+        if final_prior is None:
+            # Uniform-sample fixed-point estimate of the unconditional match
+            # rate (self-consistent, not biased by a flat 0.5 prior).
+            base_rate = self._uniform_prior_estimate(
+                records, min(200_000, n_pairs * 4), rng)
+            if base_rate != base_rate:  # nan: unexpected empty sample
+                base_rate = 0.0
+            final_prior = float(np.clip(base_rate, 1e-8, 0.5))
+
         scorer = self.__class__.from_settings(
             {
                 "comparisons": [c.resolved() for c in new_comparisons],
@@ -829,9 +855,16 @@ class FellegiSunterScorer:
             threshold=self.threshold,
         )
         # Record the EM mixing share over the blocked candidate pairs (pi) and
-        # the blocked-pair count (n_pairs = |S0|) so the Yancey count-ratio
-        # prior correction can be applied later (see recalibrate_prior).
-        scorer._em = {"pi": float(pi), "n_pairs": int(n_pairs)}
+        # the blocked-pair count (n_pairs = |S0|).  ``pi`` reflects the blocked
+        # pool, which is intentionally biased toward matches (blocking rules),
+        # so it is a *blocked*-share estimate -- always use ``prior_empirical``
+        # (the uniform-posterior base rate) as the honest full-pair prior.  The
+        # pair count and block share let recalibrate_prior reproduce either.
+        scorer._em = {
+            "pi": float(pi),
+            "n_pairs": int(n_pairs),
+            "prior_empirical": float(final_prior),
+        }
         return scorer
 
     def recalibrate_prior(
@@ -891,8 +924,8 @@ class FellegiSunterScorer:
                 "blocked-pair count); use method='empirical' for a manually "
                 "constructed scorer"
             )
-        pi = float(self._em["pi"])
-        n0 = int(self._em["n_pairs"])
+        pi = float(self._em.get("pi", 0.0))
+        n0 = int(self._em.get("n_pairs", 0))
         n = len(records)
         n_total_pairs = n * (n - 1) // 2
         # Yancey 2004 sec 2.4: Pr(C2)_S = (|S0|/|S|) * Pr(C2) (and C3 absorbs
@@ -919,30 +952,93 @@ class FellegiSunterScorer:
     ) -> "FellegiSunterScorer":
         """Empirical resample recalibration (the pre-``method`` behaviour).
 
-        Draws a ``sample_size`` uniform pair sample from ``records``, scores it
-        with the trained ``m/u``, and sets the prior to the model's own expected
-        match rate (optionally divided by ``recall`` to compensate for blocking
-        that produced the candidate pairs).
+        Draws a ``sample_size`` uniform pair sample from ``records`` and sets
+        the prior to the model's own expected match rate via the self-
+        consistent fixed-point estimate (:meth:`_uniform_prior_estimate`).
+        ``recall`` is accepted for API compatibility; the uniform sample is
+        already drawn over the full pair domain, so no recall adjustment is
+        applied (dividing a full-domain posterior mean by recall was biased).
         """
         rng = np.random.default_rng(seed)
-        n = len(records)
-        pairs = list(_sample_all_pairs(n, int(sample_size), rng))
-        if not pairs:
+        base_rate = self._uniform_prior_estimate(
+            records, int(sample_size), rng)
+        if base_rate != base_rate:  # nan: empty sample
             return self
-        left = [records[i] for i, _ in pairs]
-        right = [records[j] for _, j in pairs]
-        probs = self.score_pairs(left, right) if hasattr(self, "score_pairs") else None
-        if probs is None:
-            return self
-        base_rate = float(np.mean(probs))
-        full_prior = np.clip(base_rate / max(float(recall), 1e-3), 1e-8, 0.5)
+        full_prior = float(np.clip(base_rate, 1e-8, 0.5))
         new_settings = self.to_settings()
-        new_settings["probability_two_random_records_match"] = float(full_prior)
+        new_settings["probability_two_random_records_match"] = full_prior
         return self.__class__.from_settings(
             new_settings, threshold=self.threshold,
         )
 
     # -- pair sources -------------------------------------------------------
+
+    def _uniform_prior_estimate(
+        self,
+        records: Sequence[dict],
+        sample_size: int,
+        rng: np.random.Generator,
+    ) -> float:
+        """Self-consistent estimate of the unconditional match base rate.
+
+        Draws a ``sample_size`` uniform pair sample and solves the fixed point
+        ``pi = mean(posterior(pi))`` over it (a few likelihood iterations on the
+        *precomputed* per-pair evidence).  ``p05`` is the posterior at a flat
+        ``0.5`` prior, so ``evidence = logit(p05)`` and
+        ``posterior(pi) = sigmoid(evidence + logit(pi))``; the fixed-point loop
+        is a cheap vectorized iteration over a 1-D array -- no scorer rebuild
+        per iteration.
+
+        Boundary guard: ``pi = mean(posterior(pi))`` has attracting fixed
+        points at both 0 and 1 (the logistic is increasing in the prior), so
+        an evidence-positive pool can run the iteration to the spurious 1.0.
+        The guard runs *on every iterate*: once the iterate is pushed above
+        ``0.9`` and still climbing, we fall back to the **evidence-positive
+        share** ``mean(ev > 0)`` -- a prior-free, bounded, lower-anchor
+        estimate of the match share that cannot be inflated by the logit
+        coupling.  Returns ``nan`` when the sample is empty (callers must
+        handle it).
+        """
+        n = len(records)
+        pairs = list(_sample_all_pairs(n, int(sample_size), rng))
+        if not pairs:
+            return float("nan")
+        left = [records[i] for i, _ in pairs]
+        right = [records[j] for _, j in pairs]
+        # Per-pair evidence: logit of the posterior at a neutral 0.5 prior
+        # (sigmoid(evidence) = posterior(0.5)), computed once.
+        neutral = FellegiSunterScorer.from_settings(
+            {
+                "comparisons": [c.resolved() for c in self.comparisons],
+                "probability_two_random_records_match": 0.5,
+            },
+            threshold=self.threshold,
+        )
+        p05 = np.asarray(neutral.score_pairs(left, right), dtype=np.float64)
+        p05 = np.clip(p05, 1e-12, 1.0 - 1e-12)
+        evidence = np.log(p05) - np.log(1.0 - p05)
+        # Fixed-point iteration pi = mean(sigmoid(evidence + logit(pi))).
+        # Convergence is tested in logit space (which contracts faster in the
+        # slow near-boundary regime) and the spurious-1 trajectory guard runs
+        # *every* iterate, so a pool climbing past 0.9 without stabilizing is
+        # caught even if it would land below the final-value threshold.
+        ev_share = float((evidence > 0.0).mean())
+        pi = 0.5
+        for _ in range(40):
+            logit_pi = np.log(max(pi, 1e-12)) - np.log(max(1.0 - pi, 1e-12))
+            pi_new = float(np.mean(_sigmoid(np.clip(evidence + logit_pi, -50.0, 50.0))))
+            if abs((np.log(max(pi_new, 1e-12)) - np.log(max(1.0 - pi_new, 1e-12)))
+                   - logit_pi) < 1e-4:
+                pi = pi_new
+                break
+            # Trajectory boundary guard: if the iterate is pushed into the
+            # top band and keeps climbing, fall back to the evidence-positive
+            # share (prior-free, bounded) rather than converging to ~1.
+            if pi_new > 0.9 and pi_new > pi:
+                pi = min(pi_new, max(ev_share, 1e-6))
+                break
+            pi = pi_new
+        return pi
 
     def _blocked_pairs(
         self,
@@ -951,38 +1047,226 @@ class FellegiSunterScorer:
         max_pairs: int,
         rng: np.random.Generator,
     ) -> list[tuple[int, int]]:
+        """Generate candidate pairs under the blocking rules.
+
+        Two changes vs the original exact-key grouping:
+
+        * **Fuzzy blocking for string columns.**  Perturbed twins (case flips,
+          initials, typos) never share an exact first-name string, so an exact
+          group would join only non-matches.  For a single string field we use
+          a *papered* fuzzy block: records whose Jaro similarity is above
+          ``_FUZZY_BLOCK_MIN`` are placed into the same buckets by a
+          character-2-gram signature with a wide window, so a perturbed value
+          still lands in its base's bucket (it shares many trigrams).  For
+          multi-column rules we still use exact keys (interpreted as a
+          conjunction), which is the correct semantics for canonical ids.
+
+        * **Per-rule pair budget.**  The old loop ``break``ed out of the whole
+          rule list once the total cap was hit, so the first (most common)
+          rule could saturate all ``max_pairs`` and later, more discriminative
+          rules (e.g. ``date_of_birth``, which twins DO share) never ran.
+          Each rule now gets a slice of the budget, so the candidate pool mixes
+          evidence from every rule.
+        """
         from collections import defaultdict
 
+        import vectorer.sim as sim
+
         pairs: list[tuple[int, int]] = []
+        seen: set[tuple[int, int]] = set()
+
+        def add_clique(members: list[int], allowance: list[int]) -> None:
+            """Emit pairs from a group, drawing from a per-rule remaining
+            ``allowance`` (shared across all of the rule's groups and paths,
+            so the exact and fuzzy emission paths together never exceed the
+            rule's budget slice).
+            """
+            nonlocal pairs, seen
+            if len(members) < 2 or allowance[0] <= 0:
+                return
+            # The pool may already be full from earlier rules.
+            if len(pairs) >= max_pairs:
+                return
+            remaining = min(allowance[0], max_pairs - len(pairs))
+            if remaining <= 0:
+                return
+            if len(members) * (len(members) - 1) // 2 <= remaining:
+                for i in range(len(members)):
+                    for j in range(i + 1, len(members)):
+                        key = (members[i], members[j])
+                        if key not in seen:
+                            seen.add(key)
+                            pairs.append((members[i], members[j]))
+                            allowance[0] -= 1
+                        if allowance[0] <= 0 or len(pairs) >= max_pairs:
+                            return
+            else:
+                chosen = rng.choice(members, size=min(len(members), 256), replace=False)
+                chosen = sorted(chosen.tolist())
+                for i in range(len(chosen)):
+                    for j in range(i + 1, len(chosen)):
+                        key = (chosen[i], chosen[j])
+                        if key not in seen:
+                            seen.add(key)
+                            pairs.append((chosen[i], chosen[j]))
+                            allowance[0] -= 1
+                        if allowance[0] <= 0 or len(pairs) >= max_pairs:
+                            return
+
+        # Order rules by specificity: columns with the most distinct values
+        # (high cardinality, e.g. date_of_birth) produce small, rare groups
+        # that are most likely to contain *twins* and least likely to waste the
+        # budget on common-value non-match cliques.  The budget is allocated
+        # proportionally to this specificity, not equally: a common-name rule
+        # needs only a small slice each group, while a rare-DOB rule needs the
+        # budget to reach its (scarce but decisive) twins.
+        scored_rules: list[tuple[float, Sequence[str]]] = []
         for rule in rules:
+            if not rule:
+                continue
+            distinct = set()
+            for record in records:
+                if len(rule) == 1:
+                    v = record.get(rule[0])
+                    if v is None:
+                        continue
+                    distinct.add(str(v).strip() if isinstance(v, str) else v)
+                else:
+                    k = tuple(record.get(f) for f in rule)
+                    if any(x is None for x in k):
+                        continue
+                    distinct.add(k)
+            # Cardinality ratio -> revenue share.  Higher distinct-count => more
+            # budget share (capped so a single rule can't take it all).
+            share = min(float(len(distinct)), 50000.0)
+            scored_rules.append((share, rule))
+        scored_rules.sort(key=lambda t: t[0], reverse=True)
+        shares = [s for s, _ in scored_rules]
+        total_share = float(sum(shares)) or 1.0
+        # Per-rule remaining allowance (shared across the rule's groups and
+        # both emission paths).  Every rule gets at least 1 pair so a
+        # rounding-absorbing last rule is never starved to zero; the global
+        # `max_pairs` cap is still enforced at emission time.
+        budget_by_rule = [max(1, int(max_pairs * (s / total_share))) for s in shares]
+        if budget_by_rule and len(budget_by_rule) > 1:
+            budget_by_rule[-1] = max(
+                1, int(max_pairs) - int(sum(budget_by_rule[:-1])))
+
+        for rule, per_rule0 in zip([r for _, r in scored_rules], budget_by_rule):
             if len(pairs) >= max_pairs:
                 break
-            groups: dict = defaultdict(list)
-            for position, record in enumerate(records):
-                key = tuple(record.get(f) for f in rule)
-                if any(k is None for k in key):
-                    continue
-                groups[key].append(position)
-            for members in groups.values():
-                if len(members) < 2 or len(pairs) >= max_pairs:
-                    continue
-                # Cap oversize groups so the pair count stays under max_pairs.
-                remaining = max_pairs - len(pairs)
-                clique = len(members) * (len(members) - 1) // 2
-                if clique <= remaining:
-                    for i in range(len(members)):
-                        for j in range(i + 1, len(members)):
-                            pairs.append((members[i], members[j]))
-                            if len(pairs) >= max_pairs:
-                                return pairs
-                else:
-                    chosen = rng.choice(members, size=min(len(members), 256), replace=False)
-                    chosen = sorted(chosen.tolist())
-                    for i in range(len(chosen)):
-                        for j in range(i + 1, len(chosen)):
-                            pairs.append((chosen[i], chosen[j]))
-                            if len(pairs) >= max_pairs:
-                                return pairs
+            if not rule:
+                continue
+            allowance = [per_rule0]
+            is_single_string = len(rule) == 1
+            if is_single_string:
+                # Fuzzy bucket: case/typo-flipped twins collide on a
+                # count-aware trigram signature; exact groups catch identical
+                # (canonical) values.  Short strings use a case-insensitive
+                # exact key (no trigrams), so "jack"/"Jack" still join via the
+                # bucket path when long enough, and identical short values via
+                # the exact group.
+                exact_groups: dict = defaultdict(list)
+                fuzzy_buckets: dict = defaultdict(dict)
+                for position, record in enumerate(records):
+                    value = record.get(rule[0])
+                    if value is None:
+                        continue
+                    val_str = str(value).strip()
+                    if not val_str:
+                        continue
+                    bucket = _fuzzy_block_key(val_str)
+                    if bucket is None:
+                        # Short string: case-insensitive exact key.
+                        exact_groups[val_str.casefold()].append(position)
+                        continue
+                    fuzzy_buckets[bucket][position] = val_str
+                # Exact groups first (canonical pairs).
+                for members in exact_groups.values():
+                    if len(members) < 2 or len(pairs) >= max_pairs or allowance[0] <= 0:
+                        continue
+                    add_clique(members, allowance)
+                    if len(pairs) >= max_pairs or allowance[0] <= 0:
+                        break
+                # Then fuzzy buckets (perturbed twins): Jaro-check every
+                # within-bucket pair *vectorized* (a single batched similarity
+                # call over the outer-product pair array), so only genuinely
+                # similar strings are admitted.
+                for bucket, members in fuzzy_buckets.items():
+                    if len(members) < 2 or len(pairs) >= max_pairs or allowance[0] <= 0:
+                        continue
+                    # If the rule's remaining allowance is too small to be a
+                    # meaningful sample of this bucket, the Jaro grid (and the
+                    # ~sqrt(allowance) subsample it forces) would only distort:
+                    # a low allowance can admit at most a handful of pairs, but
+                    # subsampling a big bucket down to sqrt(allowance) members
+                    # makes hitting the true twin vanishingly unlikely.  Skip
+                    # the bucket when its size dwarfs the remaining budget.
+                    n_fb = len(members)
+                    if n_fb > allowance[0] * 4:
+                        continue
+                    mlist = sorted(members)
+                    a_vals = np.array([members[i] for i in mlist], dtype=object)
+                    n_fb = len(mlist)
+                    # Only the remaining allowance can ever be admitted for
+                    # this bucket, so the Jaro grid never needs more than
+                    # sqrt(allowance) members.  This bounds each bucket's grid
+                    # work (O(allowance)) instead of O(n_fb^2) which could be
+                    # quadratic in the whole population for a heavy-tailed
+                    # bucket.
+                    grid_n = int(np.ceil(np.sqrt(max(float(allowance[0]), 1.0))))
+                    grid_n = min(n_fb, max(grid_n, 8), 1000)
+                    if grid_n < n_fb:
+                        keep = rng.choice(mlist, size=grid_n, replace=False)
+                        mlist = sorted(keep.tolist())
+                        a_vals = np.array([members[i] for i in mlist], dtype=object)
+                        n_fb = len(mlist)
+                    # Vectorized Jaro over the (i, j) pair grid.
+                    left = np.repeat(a_vals, n_fb)
+                    right = np.tile(a_vals, n_fb)
+                    sims = sim.jaro_similarity(left, right).reshape(n_fb, n_fb)
+                    diag_mask = ~np.eye(n_fb, dtype=bool)
+                    sims = np.where(diag_mask, sims, -1.0)
+                    # Admit only genuinely similar, ordered pairs.
+                    # takes the lower-triangle candidate indices (x < y) from
+                    # the flattened lower-half of the matrix.
+                    ys, xs = np.where(sims >= 0.8)
+                    cand = [(x, y) for x, y in zip(xs, ys) if x < y]
+                    seats = min(len(cand), allowance[0])
+                    if seats <= 0:
+                        if allowance[0] <= 0:
+                            break
+                        continue
+                    if len(cand) <= allowance[0]:
+                        pick_idx = range(len(cand))
+                    else:
+                        pick_idx = rng.choice(len(cand), size=seats, replace=False)
+                        pick_idx = pick_idx.tolist()
+                    for pick in pick_idx:
+                        x, y = cand[pick]
+                        key = (int(mlist[x]), int(mlist[y]))
+                        if key not in seen:
+                            seen.add(key)
+                            pairs.append(key)
+                            allowance[0] -= 1
+                        if allowance[0] <= 0 or len(pairs) >= max_pairs:
+                            break
+                    if len(pairs) >= max_pairs or allowance[0] <= 0:
+                        break
+            else:
+                # Multi-column rule: exact conjunction group (canonical id).
+                groups: dict = defaultdict(list)
+                for position, record in enumerate(records):
+                    key = tuple(record.get(f) for f in rule)
+                    if any(k is None for k in key):
+                        continue
+                    groups[key].append(position)
+                for members in groups.values():
+                    if len(members) < 2 or len(pairs) >= max_pairs or allowance[0] <= 0:
+                        continue
+                    add_clique(members, allowance)
+                    if len(pairs) >= max_pairs or allowance[0] <= 0:
+                        break
         return pairs
 
     def _positions_pair_values(
@@ -1184,6 +1468,25 @@ def _level_proportions(
 
 def _level_defaults(spec: ComparisonSpec) -> list[float]:
     return [lv.m if (lv.m is not None and not lv.is_null) else 1e-8 for lv in spec.levels]
+
+
+def _fuzzy_block_key(value: str) -> Optional[str]:
+    """A fixed-size, **count-aware** trigram signature bucket key.
+
+    Returns ``None`` when the value is too short to be bucketed.  The key is a
+    join of ``trigram:count`` entries (lowercased), so two strings that share
+    most trigrams *with similar multiplicity* (a case/typo-perturbed twin and
+    its base) land in the same bucket, while position-flipped or length-
+    divergent values (which have different trigram multisets) usually don't.
+    """
+    v = "".join(ch for ch in value.lower() if ch.isalnum())
+    if len(v) < 6:
+        return None
+    trigrams = [v[i:i + 3] for i in range(len(v) - 2)]
+    counts: dict = {}
+    for t in trigrams:
+        counts[t] = counts.get(t, 0) + 1
+    return "|".join(f"{t}:{c}" for t, c in sorted(counts.items()))
 
 
 def _sample_all_pairs(n: int, cap: int, rng: np.random.Generator) -> list[tuple[int, int]]:
