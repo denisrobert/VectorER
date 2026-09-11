@@ -91,6 +91,36 @@ def build_embedder(kind: str):
     return CharacterHashingEmbedding(dimension=384)
 
 
+def _enriched_training_set(
+    records: Sequence[dict],
+    comparisons: Sequence,
+    *,
+    max_pairs: float = 1e6,
+    em_seed: Optional[int] = None,
+    enrich_keep_frac: float = 0.05,
+) -> list[dict]:
+    """Shared Yancey record-enrichment step.
+
+    Scores a preliminary weight pool with default ``m/u``, keeps the records of
+    the highest-weight pairs (``enrich_keep_frac``), and returns that enriched
+    subset for EM training.  Returns ``None`` semantics up to the caller for
+    the ``enrich_keep_frac <= 0`` (plain EM) case.
+    """
+    from benchmark_data import build_weight_pool, enrich_records
+
+    if enrich_keep_frac <= 0:
+        return list(records)
+    _seed = em_seed if em_seed is not None else 42
+    base = FellegiSunterScorer.from_comparisons(comparisons)
+    pool_idx = build_weight_pool(records, int(max_pairs), _seed)
+    if not pool_idx:
+        return list(records)
+    pl = [records[i] for i, _ in pool_idx]
+    pr = [records[j] for _, j in pool_idx]
+    weights = base.score_pairs(pl, pr)
+    return enrich_records(records, pool_idx, weights, enrich_keep_frac, _seed)
+
+
 def em_train(
     records: Sequence[dict],
     comparisons: Optional[Sequence] = None,
@@ -100,16 +130,48 @@ def em_train(
     recall: float = 0.7,
     em_seed: Optional[int] = None,
     tau: float = 0.85,
+    enrich_keep_frac: float = 0.05,
+    recalibration_method: str = "yancey",
 ) -> FellegiSunterScorer:
     """Build a scorer whose ``m/u`` and prior are fit by expectation maximisation
-    over ``records`` (a duplicate-bearing population)."""
+    over ``records`` (a duplicate-bearing population).
+
+    By default the EM training is **Yancey match-enrichment**: preliminary
+    weights (default m/u) are scored over a pair pool, the records of the
+    highest-weight pairs are kept (``enrich_keep_frac``), EM is fit on that
+    enriched subset, and the inflated enriched-set prior is recalibrated back
+    to the full set (``recalibrate_prior(method=recalibration_method)``).
+    Plain EM on the raw population collapses its sparse match class (near-zero
+    twin recovery), which is exactly why the Yancey benchmarks exist; pass
+    ``enrich_keep_frac=0`` to disable enrichment for a plain-EM comparison.
+    """
     comparisons = comparisons if comparisons is not None else make_comparisons()
-    scorer = FellegiSunterScorer.from_comparisons(comparisons, threshold=tau)
-    return scorer.fit_em(
-        records,
+    base = FellegiSunterScorer.from_comparisons(comparisons, threshold=tau)
+
+    if enrich_keep_frac <= 0:
+        return base.fit_em(
+            records,
+            training_block_on=training_block_on,
+            max_pairs=max_pairs,
+            recall=recall,
+            seed=em_seed,
+        )
+
+    enriched = _enriched_training_set(
+        records, comparisons, max_pairs=max_pairs,
+        em_seed=em_seed, enrich_keep_frac=enrich_keep_frac,
+    )
+    trained = base.fit_em(
+        enriched,
         training_block_on=training_block_on,
         max_pairs=max_pairs,
         recall=recall,
+        seed=em_seed,
+    )
+    return trained.recalibrate_prior(
+        records,
+        method=recalibration_method,
+        sample_size=min(int(max_pairs), 200_000),
         seed=em_seed,
     )
 
@@ -297,14 +359,18 @@ def prior_sweep(
     seed: int = 42,
     em_max_pairs: float = 100000,
     neg_pairs: Sequence[tuple[dict, dict]] | None = None,
+    enrich_keep_frac: float = 0.05,
 ) -> dict[str, Any]:
     """Sweep ``fit_em(fixed_prior=...)`` over ``priors`` x scoring ``taus``.
 
     Each prior trains a scorer with the prior FROZEN (only m/u are learned --
-    the calibration-paradox remedy), and precision/recall are computed on the
-    labelled eval pairs at each ``tau`` on that scorer.  This produces an
-    operating-point surface so you can pick the best prior+threshold instead of
-    trusting EM's own (often miscalibrated) base rate.
+    the calibration-paradox remedy) on the **Yancey-enriched** training subset
+    (``enrich_keep_frac`` of the highest-weight pair records), and
+    precision/recall are computed on the labelled eval pairs at each ``tau``
+    on that scorer.  This produces an operating-point surface so you can pick
+    the best prior+threshold instead of trusting EM's own (often
+    miscalibrated) base rate.  Pass ``enrich_keep_frac=0`` for the plain-EM
+    variant.
 
     ``gt_pairs`` give positives as ``(idx_a, idx_b)`` into ``records``.
     ``neg_pairs``, when given, are explicit ``(record_a, record_b)`` pairs that
@@ -325,10 +391,15 @@ def prior_sweep(
         y.append(0)
     y = np.asarray(y, dtype=int)
 
+    enriched = _enriched_training_set(
+        records, comps, max_pairs=em_max_pairs,
+        em_seed=seed, enrich_keep_frac=enrich_keep_frac,
+    )
+
     rows = []
     for prior in priors:
         scorer = FellegiSunterScorer.from_comparisons(comps).fit_em(
-            records, training_block_on=[("first_name",), ("date_of_birth",)],
+            enriched, training_block_on=[("first_name",), ("date_of_birth",)],
             max_pairs=em_max_pairs, recall=0.7, seed=seed,
             fixed_prior=prior,
         )
@@ -396,6 +467,15 @@ def main() -> None:
                         help="blocking-recall adjustment for the EM prior")
     parser.add_argument("--em-seed", type=int, default=None,
                         help="seed for EM random-pair sampling (defaults to --seed+313)")
+    parser.add_argument("--enrich-keep-frac", type=float, default=0.05,
+                        help="Yancey match-enrichment: fraction of highest-weight "
+                             "pair records kept for EM training (default 0.05); "
+                             "pass 0 to disable enrichment (plain EM)")
+    parser.add_argument("--recalibration-method", choices=["yancey", "empirical"],
+                        default="yancey",
+                        help="prior recovery after enrichment EM: 'yancey' "
+                             "(paper's |S0|/|S| count-ratio correction, default) "
+                             "or 'empirical' (full-set posterior resample)")
     parser.add_argument("--n-procs", type=int, default=None,
                         help="run the bulk dedup FS-scoring stage across N process "
                              "workers (multi-core) instead of single-process. "
@@ -448,6 +528,8 @@ def main() -> None:
         recall=args.em_recall,
         em_seed=em_seed,
         tau=args.tau,
+        enrich_keep_frac=args.enrich_keep_frac,
+        recalibration_method=args.recalibration_method,
     )
     em_seconds = time.perf_counter() - t0
     em_diagnostics = scorer.to_settings()
@@ -462,7 +544,7 @@ def main() -> None:
         priors = [float(x) for x in args.prior_sweep_priors.split(",")]
         taus = [float(x) for x in args.prior_sweep_taus.split(",")]
         # Build labelled pairs: true (dup, base) pairs and an equal set of
-        # non-match pairs sampled from the population.
+        # genuinely-unrelated non-match pairs (built below).
         gt = {}
         raw = json.loads(Path(args.gt_file).read_text(encoding="utf-8"))
         for k, v in raw.items():
@@ -493,7 +575,7 @@ def main() -> None:
               f"{n_pos} positive + {len(neg_pairs)} negative eval pairs")
         sweep = prior_sweep(
             records, gt_pairs, priors, taus, seed=args.seed, em_max_pairs=args.em_max_pairs,
-            neg_pairs=neg_pairs,
+            neg_pairs=neg_pairs, enrich_keep_frac=args.enrich_keep_frac,
         )
         results = {
             "parameters": {
@@ -503,6 +585,7 @@ def main() -> None:
                 "training_subsample": len(em_data),
                 "em_max_pairs": args.em_max_pairs,
                 "em_seed": em_seed,
+                "enrich_keep_frac": args.enrich_keep_frac,
                 "priors": priors,
                 "taus": taus,
                 "seed": args.seed,
@@ -579,6 +662,8 @@ def main() -> None:
             "em_recall": args.em_recall,
             "em_seed": em_seed,
             "em_block_on": block_on,
+            "enrich_keep_frac": args.enrich_keep_frac,
+            "recalibration_method": args.recalibration_method,
             "n_canopies": n_canopies,
             "overlap": args.overlap,
             "tau": args.tau,

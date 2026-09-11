@@ -140,9 +140,15 @@ def build_labelled_training_pairs(
     """Build an ``is_match``-labelled pair set from the training population.
 
     Half are true matches (a record + its perturbed variant), half true
-    non-matches (two distinct records).  Each row has ``is_match`` plus
-    ``<field>_l`` / ``<field>_r`` for every compared field, as required by
+    non-matches.  Each row has ``is_match`` plus ``<field>_l`` / ``<field>_r``
+    for every compared field, as required by
     ``FellegiSunterScorer.calibrate_from_pairs``.
+
+    The non-match half pairs a training record with a **genuinely unrelated**
+    person: two distinct population records are *not* valid non-matches in the
+    synthetic population -- the tiny name grid makes any two records near-
+    duplicates (a working scorer would rightly call them matches), so
+    calibrating ``u`` on them over-weights the high-similarity levels.
     """
     rng = random.Random(seed)
     half = n_pairs // 2
@@ -156,16 +162,18 @@ def build_labelled_training_pairs(
             row[f"{f}_l"] = rec[f]
             row[f"{f}_r"] = variant[f]
         pairs.append(row)
-    # True non-matches: distinct identities.
-    for _ in range(half):
-        i = rng.randrange(len(train_records))
-        j = rng.randrange(len(train_records))
-        while j == i:
-            j = rng.randrange(len(train_records))
+    # True non-matches: a training record paired with an unrelated person.
+    from benchmark_data import build_unrelated_negatives
+
+    neg_pairs = build_unrelated_negatives(
+        train_records, half, seed + 1, pair_left_record=True,
+        rng=random.Random(seed + 2),
+    )
+    for left, unrelated in neg_pairs:
         row = {"is_match": 0}
         for f in _LABELLED_FIELDS:
-            row[f"{f}_l"] = train_records[i][f]
-            row[f"{f}_r"] = train_records[j][f]
+            row[f"{f}_l"] = left[f]
+            row[f"{f}_r"] = unrelated[f]
         pairs.append(row)
     return pairs
 

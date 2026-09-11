@@ -2,12 +2,16 @@
   "parameters": {
     "total_records": 10400,
     "duplicate_pairs_planted": 400,
+    "data_file": null,
+    "data_key": null,
+    "gt_file": null,
     "n_canopies": 256,
     "overlap": 2,
     "tau": 0.85,
     "missing_rate": 0.3,
     "seed": 42,
-    "embedder": "hashing"
+    "embedder": "hashing",
+    "merge": "rep"
   },
   "quality": {
     "total_records": 10400,
@@ -23,18 +27,18 @@
     "largest_cluster": 29,
     "n_candidate_pairs": 1141570,
     "timing_seconds": {
-      "parse": 0.0054,
-      "embed": 1.6672,
-      "canopy": 0.8493,
-      "fellegi_sunter": 152.2166,
-      "swoosh": 0.0476
+      "parse": 0.0059,
+      "embed": 1.9093,
+      "canopy": 1.32,
+      "fellegi_sunter": 154.5303,
+      "swoosh": 0.0567
     },
-    "total_seconds": 154.7862,
-    "records_per_second": 67.2,
-    "candidate_pairs_per_second": 7499.6,
-    "fellegi_sunter_seconds_per_million_pairs": 133.34,
+    "total_seconds": 157.8221,
+    "records_per_second": 65.9,
+    "candidate_pairs_per_second": 7387.4,
+    "fellegi_sunter_seconds_per_million_pairs": 135.366,
     "seed": 42,
-    "wall_seconds": 155.2773
+    "wall_seconds": 158.5078
   },
   "environment": {
     "python": "3.13.1",
@@ -46,13 +50,5 @@
       "faiss": "1.15.0",
       "sentence_transformers": "6.0.0"
     }
-  },
-  "comparison": {
-    "reference_artifact": "C:\\src\\experiments\\entity\\results\\erwhitepaper\\section7_results.json",
-    "original_fellegi_sunter_seconds": 1321.6,
-    "original_scored_pairs": 800260,
-    "original_pairs_per_second": 605.5,
-    "new_pairs_per_second": 7499.6,
-    "scoring_throughput_speedup": 12.39
   }
 }

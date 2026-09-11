@@ -2,6 +2,9 @@
   "parameters": {
     "total_records": 4160,
     "duplicate_pairs_planted": 160,
+    "data_file": null,
+    "data_key": null,
+    "gt_file": null,
     "n_canopies": 102,
     "overlap": 2,
     "tau": 0.85,
@@ -24,18 +27,18 @@
     "largest_cluster": 9,
     "n_candidate_pairs": 378563,
     "timing_seconds": {
-      "parse": 0.0021,
-      "embed": 0.6386,
-      "canopy": 0.3362,
-      "fellegi_sunter": 56.0448,
-      "swoosh": 0.043
+      "parse": 0.0024,
+      "embed": 0.7221,
+      "canopy": 0.2704,
+      "fellegi_sunter": 47.2557,
+      "swoosh": 0.035
     },
-    "total_seconds": 57.0648,
-    "records_per_second": 72.9,
-    "candidate_pairs_per_second": 6754.6,
-    "fellegi_sunter_seconds_per_million_pairs": 148.046,
+    "total_seconds": 48.2855,
+    "records_per_second": 86.2,
+    "candidate_pairs_per_second": 8011.0,
+    "fellegi_sunter_seconds_per_million_pairs": 124.829,
     "seed": 42,
-    "wall_seconds": 57.2637
+    "wall_seconds": 48.5235
   },
   "environment": {
     "python": "3.13.1",

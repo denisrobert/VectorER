@@ -1,8 +1,10 @@
 {
   "parameters": {
     "reference_records": 50000,
+    "data_file": null,
+    "data_key": null,
     "index_dir": null,
-    "query_count": 30,
+    "query_count": 100,
     "match_threshold": 0.85,
     "blocking_k": 20,
     "missing_rate": 0.3,
@@ -11,25 +13,21 @@
     "embedder": "hashing"
   },
   "index": {
-    "index_build_seconds": 8.627261100104079
+    "index_build_seconds": 9.132419200002914
   },
   "latency": {
-    "count": 30,
-    "mean_ms": 4.138103352549176,
-    "median_ms": 4.277999978512526,
-    "p50_ms": 4.277999978512526,
-    "p75_ms": 4.503400065004826,
-    "p90_ms": 4.649200011044741,
-    "p95_ms": 4.918099846690893,
-    "p99_ms": 5.8340998366475105,
-    "min_ms": 2.9017000924795866,
-    "max_ms": 5.8340998366475105,
-    "stdev_ms": 0.622574088680334,
-    "scope": "cold per-query end-to-end IncrementalPipeline.resolve: embedding + FAISS top-k blocking + native vectorized Fellegi-Sunter scoring (no SQL engine)",
-    "embedding_mean_ms": 0.2578999924783905,
-    "blocking_mean_ms": 1.8333233349646132,
-    "scorer_mean_ms": 2.8322666650637984,
-    "breakdown_scope": "independently timed: embedding, block (embed + FAISS search), scorer.score_batch (vectorized Fellegi-Sunter scoring)"
+    "count": 100,
+    "mean_ms": 6.046045999901253,
+    "median_ms": 6.0834000032627955,
+    "p50_ms": 6.0834000032627955,
+    "p75_ms": 6.543400006194133,
+    "p90_ms": 6.9671000019297935,
+    "p95_ms": 7.354100001975894,
+    "p99_ms": 8.746899999096058,
+    "min_ms": 3.663399998913519,
+    "max_ms": 15.17759999842383,
+    "stdev_ms": 1.3114199953274683,
+    "scope": "cold per-query end-to-end IncrementalPipeline.resolve: embedding + FAISS top-k blocking + native vectorized Fellegi-Sunter scoring (no SQL engine)"
   },
   "quality": {
     "top_k_blocking_recall": 1.0,
@@ -58,7 +56,7 @@
       "seed": 42,
       "close_variation_rate": 0.15
     },
-    "speedup_mean": 10.839,
-    "speedup_median": 10.552
+    "speedup_mean": 7.418,
+    "speedup_median": 7.421
   }
 }

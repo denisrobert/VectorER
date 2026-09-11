@@ -9,6 +9,7 @@
     "seed": 42,
     "embedder": "hashing-384",
     "algorithm": "G-Swoosh",
+    "merge": "rep",
     "swoosh_only": false
   },
   "quality": {
@@ -27,21 +28,21 @@
     "n_pairs_evaluated": 794880,
     "n_pairs_matched": 3330,
     "timing_seconds": {
-      "parse": 0.0011,
-      "embed": 1.7067,
-      "canopy": 0.8455,
-      "fellegi_sunter": 146.8768,
-      "gswoosh_swoosh": 22.3814,
-      "total_seconds": 171.8115
+      "parse": 0.0014,
+      "embed": 1.6887,
+      "canopy": 0.9233,
+      "fellegi_sunter": 142.6,
+      "gswoosh_swoosh": 20.0248,
+      "total_seconds": 165.2382
     },
-    "total_seconds": 171.8115,
-    "records_per_second": 60.5,
+    "total_seconds": 165.2382,
+    "records_per_second": 62.9,
     "fellegi_sunter_call_stats": {
       "n_cached": 736586,
       "n_re_scored": 58294,
       "n_distinct_records_tested": 58294
     },
-    "merge_function": "select_representative",
+    "merge_function": "rep",
     "algorithm": "G-Swoosh"
   },
   "environment": {
@@ -53,22 +54,5 @@
       "numpy": "2.5.2",
       "faiss": "1.15.0"
     }
-  },
-  "comparison": {
-    "reference_artifact": "results\\bulk_latency.json",
-    "swoosh_stage_seconds_r_swoosh": 0.0476,
-    "swoosh_stage_seconds_g_swoosh": 22.3814,
-    "swoosh_slowdown_x": 470.2,
-    "n_pairs_evaluated_r_swoosh(approx=pairs)": 1141570,
-    "n_pairs_evaluated_g_swoosh": 794880,
-    "n_fs_rescores_g_swoosh": 58294,
-    "total_seconds_r_swoosh": 154.7862,
-    "total_seconds_g_swoosh": 171.8115,
-    "n_clusters_r_swoosh": 5443,
-    "n_clusters_g_swoosh": 7070,
-    "recall_r_swoosh": 1.0,
-    "recall_g_swoosh": 0.8825,
-    "precision_r_swoosh": 1.0,
-    "precision_g_swoosh": 1.0
   }
 }

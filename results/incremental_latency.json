@@ -1,6 +1,8 @@
 {
   "parameters": {
     "reference_records": 20000,
+    "data_file": null,
+    "data_key": null,
     "index_dir": null,
     "query_count": 100,
     "match_threshold": 0.85,
@@ -11,24 +13,24 @@
     "embedder": "hashing"
   },
   "index": {
-    "index_build_seconds": 3.9150757999159396
+    "index_build_seconds": 3.7720102000021143
   },
   "latency": {
     "count": 100,
-    "mean_ms": 20.284221009351313,
-    "median_ms": 23.53530004620552,
-    "p50_ms": 23.53530004620552,
-    "p75_ms": 25.802099844440818,
-    "p90_ms": 27.976199984550476,
-    "p95_ms": 28.588199988007545,
-    "p99_ms": 30.183900147676468,
-    "min_ms": 4.882299806922674,
-    "max_ms": 30.43960011564195,
-    "stdev_ms": 7.142270758321694,
+    "mean_ms": 4.739204000361497,
+    "median_ms": 4.731200002424885,
+    "p50_ms": 4.731200002424885,
+    "p75_ms": 5.140200002642814,
+    "p90_ms": 5.592200002865866,
+    "p95_ms": 5.725099996197969,
+    "p99_ms": 7.019299999228679,
+    "min_ms": 2.823500006343238,
+    "max_ms": 11.028300003090408,
+    "stdev_ms": 0.9693369465639607,
     "scope": "cold per-query end-to-end IncrementalPipeline.resolve: embedding + FAISS top-k blocking + native vectorized Fellegi-Sunter scoring (no SQL engine)",
-    "embedding_mean_ms": 0.29417500365525484,
-    "blocking_mean_ms": 1.2471159966662526,
-    "scorer_mean_ms": 19.26819398533553,
+    "embedding_mean_ms": 0.38267299998551607,
+    "blocking_mean_ms": 1.342942999835941,
+    "scorer_mean_ms": 3.848813000440714,
     "breakdown_scope": "independently timed: embedding, block (embed + FAISS search), scorer.score_batch (vectorized Fellegi-Sunter scoring)"
   },
   "quality": {
@@ -42,7 +44,8 @@
     "threads": 8,
     "libs": {
       "numpy": "2.5.2",
-      "faiss": "1.15.0"
+      "faiss": "1.15.0",
+      "sentence_transformers": "6.0.0"
     }
   }
 }

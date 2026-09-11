@@ -135,3 +135,60 @@ def require_compared_fields(
             f"those comparisons will degrade to null (no evidence) levels.",
             file=sys.stderr,
         )
+
+
+def build_weight_pool(
+    records: Sequence[Mapping[str, Any]],
+    max_pairs: int,
+    seed: int,
+) -> list[tuple[int, int]]:
+    """A memory-bounded pair index pool for preliminary Yancey weighting.
+
+    Mirrors the enrichment benchmark's ``(i, j)`` sliding-window pool but caps
+    both the *total* pair count (so it scales to full 300k+ populations) and
+    the window per row (so a huge ``records`` cannot materialize tens of
+    millions of tuples).  The pool is shuffled so the top-weight keep in
+    :func:`enrich_records` is a fair sample of the population's heaviest
+    pairs.
+    """
+    import random
+
+    rng = random.Random(seed)
+    n = len(records)
+    cap = max(1, int(max_pairs))
+    pool: list[tuple[int, int]] = []
+    if n < 2:
+        return pool
+    per_row = max(1, min(n - 1, max(1, cap // n) + 1))
+    for i in range(n):
+        hi = min(n, i + 1 + per_row)
+        for j in range(i + 1, hi):
+            pool.append((i, j))
+            if len(pool) >= cap:
+                break
+        if len(pool) >= cap:
+            break
+    rng.shuffle(pool)
+    return pool
+
+
+def enrich_records(
+    records: Sequence[Mapping[str, Any]],
+    score_pool_idx: Sequence[tuple[int, int]],
+    weights,
+    keep_frac: float,
+    seed: int,
+) -> list[dict]:
+    """Record-level Yancey match-enrichment: keep the records that participate
+    in the highest-weight pairs (a weight-sorted keep of ``keep_frac`` of the
+    pair pool's records)."""
+    import numpy as np
+
+    order = np.argsort(weights)[::-1]
+    n_keep = max(1, int(len(order) * keep_frac))
+    keep_idx = set()
+    for k in order[:n_keep]:
+        i, j = score_pool_idx[k]
+        keep_idx.add(i)
+        keep_idx.add(j)
+    return [records[i] for i in sorted(keep_idx)]

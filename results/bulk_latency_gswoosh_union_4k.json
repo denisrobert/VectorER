@@ -10,7 +10,7 @@
     "embedder": "hashing-384",
     "algorithm": "G-Swoosh",
     "merge": "union",
-    "swoosh_only": true
+    "swoosh_only": false
   },
   "quality": {
     "total_records": 4160,
@@ -28,16 +28,15 @@
     "n_pairs_evaluated": 369165,
     "n_pairs_matched": 972,
     "timing_seconds": {
-      "setup_seconds": 69.6135,
-      "gswoosh_swoosh": 399.6032,
-      "parse": 0.0,
-      "embed": 0.0,
-      "canopy": 0.0,
-      "fellegi_sunter": 0.0,
-      "total_seconds": 469.2167
+      "parse": 0.0006,
+      "embed": 0.7149,
+      "canopy": 0.2931,
+      "fellegi_sunter": 49.028,
+      "gswoosh_swoosh": 323.8407,
+      "total_seconds": 373.8773
     },
-    "total_seconds": 469.2167,
-    "records_per_second": 8.9,
+    "total_seconds": 373.8773,
+    "records_per_second": 11.1,
     "fellegi_sunter_call_stats": {
       "n_cached": 243047,
       "n_re_scored": 126118,

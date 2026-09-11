@@ -93,17 +93,10 @@ def eval_scorer(scorer: FellegiSunterScorer, eval_left, eval_right, y):
 
 
 def enrich_records(records, score_pool_idx, weights, keep_frac, seed):
-    """Record-level Yancey enrichment: keep the records that participate in
-    the highest-weight pairs (a weight-sorted keep of ``keep_frac`` of the
-    pair pool's records)."""
-    order = np.argsort(weights)[::-1]
-    n_keep = max(1, int(len(order) * keep_frac))
-    keep_idx = set()
-    for k in order[:n_keep]:
-        i, j = score_pool_idx[k]
-        keep_idx.add(i)
-        keep_idx.add(j)
-    return [records[i] for i in sorted(keep_idx)]
+    """Record-level Yancey enrichment (shared helper in benchmark_data)."""
+    from benchmark_data import enrich_records as _enrich
+
+    return _enrich(records, score_pool_idx, weights, keep_frac, seed)
 
 
 def main():

@@ -1,8 +1,10 @@
 {
   "parameters": {
     "reference_records": 50000,
+    "data_file": null,
+    "data_key": null,
     "index_dir": null,
-    "query_count": 30,
+    "query_count": 100,
     "match_threshold": 0.85,
     "blocking_k": 20,
     "missing_rate": 0.3,
@@ -11,25 +13,21 @@
     "embedder": "hashing"
   },
   "index": {
-    "index_build_seconds": 8.725712399929762
+    "index_build_seconds": 9.182960899997852
   },
   "latency": {
-    "count": 30,
-    "mean_ms": 19.350026656563085,
-    "median_ms": 17.081999918445945,
-    "p50_ms": 17.081999918445945,
-    "p75_ms": 26.162599911913276,
-    "p90_ms": 28.081400087103248,
-    "p95_ms": 28.81900011561811,
-    "p99_ms": 28.843999840319157,
-    "min_ms": 6.052499869838357,
-    "max_ms": 28.843999840319157,
-    "stdev_ms": 7.207583894736735,
-    "scope": "cold per-query end-to-end IncrementalPipeline.resolve: embedding + FAISS top-k blocking + native vectorized Fellegi-Sunter scoring (no SQL engine)",
-    "embedding_mean_ms": 0.2820666879415512,
-    "blocking_mean_ms": 2.3600066856791577,
-    "scorer_mean_ms": 17.44352333092441,
-    "breakdown_scope": "independently timed: embedding, block (embed + FAISS search), scorer.score_batch (vectorized Fellegi-Sunter scoring)"
+    "count": 100,
+    "mean_ms": 5.736566000559833,
+    "median_ms": 5.691800004569814,
+    "p50_ms": 5.691800004569814,
+    "p75_ms": 6.2811999960104,
+    "p90_ms": 6.804599994211458,
+    "p95_ms": 7.001099998888094,
+    "p99_ms": 7.642200005648192,
+    "min_ms": 3.6877999955322593,
+    "max_ms": 14.981500004068948,
+    "stdev_ms": 1.2414609705467219,
+    "scope": "cold per-query end-to-end IncrementalPipeline.resolve: embedding + FAISS top-k blocking + native vectorized Fellegi-Sunter scoring (no SQL engine)"
   },
   "quality": {
     "top_k_blocking_recall": 1.0,
@@ -42,7 +40,8 @@
     "threads": 8,
     "libs": {
       "numpy": "2.5.2",
-      "faiss": "1.15.0"
+      "faiss": "1.15.0",
+      "sentence_transformers": "6.0.0"
     }
   }
 }

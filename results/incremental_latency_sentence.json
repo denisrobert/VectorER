@@ -1,8 +1,10 @@
 {
   "parameters": {
     "reference_records": 50000,
+    "data_file": null,
+    "data_key": null,
     "index_dir": null,
-    "query_count": 30,
+    "query_count": 50,
     "match_threshold": 0.85,
     "blocking_k": 20,
     "missing_rate": 0.3,
@@ -11,25 +13,21 @@
     "embedder": "sentence"
   },
   "index": {
-    "index_build_seconds": 351.2789929001592
+    "index_build_seconds": 294.81777539999894
   },
   "latency": {
-    "count": 30,
-    "mean_ms": 33.5460166602085,
-    "median_ms": 31.44659986719489,
-    "p50_ms": 31.44659986719489,
-    "p75_ms": 36.78769990801811,
-    "p90_ms": 40.88820004835725,
-    "p95_ms": 45.7693999633193,
-    "p99_ms": 48.04829997010529,
-    "min_ms": 21.22209989465773,
-    "max_ms": 48.04829997010529,
-    "stdev_ms": 6.038372609004604,
-    "scope": "cold per-query end-to-end IncrementalPipeline.resolve: embedding + FAISS top-k blocking + native vectorized Fellegi-Sunter scoring (no SQL engine)",
-    "embedding_mean_ms": 27.538936647276085,
-    "blocking_mean_ms": 28.964843329352636,
-    "scorer_mean_ms": 4.241453328480323,
-    "breakdown_scope": "independently timed: embedding, block (embed + FAISS search), scorer.score_batch (vectorized Fellegi-Sunter scoring)"
+    "count": 50,
+    "mean_ms": 26.032349999586586,
+    "median_ms": 25.967300003685523,
+    "p50_ms": 25.967300003685523,
+    "p75_ms": 27.573899998969864,
+    "p90_ms": 28.26410000125179,
+    "p95_ms": 28.91010000166716,
+    "p99_ms": 38.27580000506714,
+    "min_ms": 21.27469999686582,
+    "max_ms": 38.27580000506714,
+    "stdev_ms": 3.110049918178573,
+    "scope": "cold per-query end-to-end IncrementalPipeline.resolve: embedding + FAISS top-k blocking + native vectorized Fellegi-Sunter scoring (no SQL engine)"
   },
   "quality": {
     "top_k_blocking_recall": 1.0,
@@ -45,20 +43,5 @@
       "faiss": "1.15.0",
       "sentence_transformers": "6.0.0"
     }
-  },
-  "comparison": {
-    "reference_artifact": "C:\\src\\experiments\\entity\\results\\erwhitepaper\\online_resolver_latency.json",
-    "reference_parameters": {
-      "index_dir": "data",
-      "reference_records": 50000,
-      "query_count": 30,
-      "match_threshold": 0.85,
-      "blocking_k": 20,
-      "missing_rate": 0.3,
-      "seed": 42,
-      "close_variation_rate": 0.15
-    },
-    "speedup_mean": 1.337,
-    "speedup_median": 1.436
   }
 }

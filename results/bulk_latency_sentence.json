@@ -2,12 +2,16 @@
   "parameters": {
     "total_records": 10400,
     "duplicate_pairs_planted": 400,
+    "data_file": null,
+    "data_key": null,
+    "gt_file": null,
     "n_canopies": 256,
     "overlap": 2,
     "tau": 0.85,
     "missing_rate": 0.3,
     "seed": 42,
-    "embedder": "sentence"
+    "embedder": "sentence",
+    "merge": "rep"
   },
   "quality": {
     "total_records": 10400,
@@ -23,18 +27,18 @@
     "largest_cluster": 25,
     "n_candidate_pairs": 933822,
     "timing_seconds": {
-      "parse": 0.0065,
-      "embed": 79.752,
-      "canopy": 1.1473,
-      "fellegi_sunter": 145.7909,
+      "parse": 0.0058,
+      "embed": 58.3071,
+      "canopy": 1.0736,
+      "fellegi_sunter": 119.9151,
       "swoosh": 0.043
     },
-    "total_seconds": 226.7396,
-    "records_per_second": 45.9,
-    "candidate_pairs_per_second": 6405.2,
-    "fellegi_sunter_seconds_per_million_pairs": 156.123,
+    "total_seconds": 179.3446,
+    "records_per_second": 58.0,
+    "candidate_pairs_per_second": 7787.4,
+    "fellegi_sunter_seconds_per_million_pairs": 128.413,
     "seed": 42,
-    "wall_seconds": 227.2066
+    "wall_seconds": 179.7402
   },
   "environment": {
     "python": "3.13.1",
