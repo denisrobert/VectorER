@@ -8,6 +8,7 @@ from vectorer.scoring import (
     FellegiSunterScorer,
     import_splink_scorer,
 )
+from vectorer.comparisons import make_comparison
 
 
 def test_identical_pair_scores_high_and_distinct_pair_scores_low(fs_scorer):
@@ -509,3 +510,208 @@ def test_fit_em_pool_contains_true_matches_with_dob_rule():
         {a, b} == {2 * i, 2 * i + 1} for a, b in blocked for i in range(50)
     )
     assert dob_twin_blocks
+
+
+def test_blocked_pairs_multi_column_rule_exact_conjunction():
+    """A multi-column rule joins only records equal on every key column."""
+    from vectorer.scoring import FellegiSunterScorer
+
+    scorer = FellegiSunterScorer.from_comparisons([
+        make_comparison('jaro_winkler_at_thresholds', col_name='first_name'),
+    ])
+    records = [
+        {'first_name': 'a', 'last_name': 'smith', 'date_of_birth': '2000-01-01'},
+        {'first_name': 'a', 'last_name': 'jones', 'date_of_birth': '2000-01-01'},
+        {'first_name': 'a', 'last_name': 'smith', 'date_of_birth': '2000-01-01'},
+        {'first_name': 'b', 'last_name': 'smith', 'date_of_birth': '2000-01-01'},
+    ]
+    blocked = scorer._blocked_pairs(
+        records, [('first_name', 'last_name')], 10000, np.random.default_rng(0))
+    # Only records 0 and 2 share BOTH first_name and last_name.
+    assert (0, 2) in {tuple(sorted(p)) for p in blocked}
+    assert not any(b == 3 for _, b in blocked)
+
+
+def test_sample_all_pairs_full_enumeration_and_too_small():
+    """_sample_all_pairs enumerates all pairs when the cap exceeds the total,
+    returns [] for tiny n, and never double-returns an unordered pair."""
+    from vectorer.scoring._candidates import _sample_all_pairs
+
+    rng = np.random.default_rng(42)
+    assert _sample_all_pairs(0, 10, rng) == []
+    assert _sample_all_pairs(1, 10, rng) == []
+    full = _sample_all_pairs(4, 100, rng)
+    assert len(full) == 6  # C(4,2)
+    assert set(full) == {(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)}
+    capped = _sample_all_pairs(1000, 10, rng)
+    assert len(capped) == 10
+    assert len(set(capped)) == 10
+    assert all(a < b for a, b in capped)
+
+
+def test_uniform_prior_estimate_returns_nan_on_empty_population():
+    from vectorer.scoring import FellegiSunterScorer
+
+    scorer = FellegiSunterScorer.from_comparisons([
+        make_comparison('email_comparison', col_name='email'),
+    ])
+    assert scorer._uniform_prior_estimate([], 100, np.random.default_rng(0)) != scorer._uniform_prior_estimate([], 100, np.random.default_rng(0))
+
+
+def test_recalibrate_empirical_returns_self_on_empty_population():
+    from vectorer.scoring import FellegiSunterScorer
+
+    scorer = FellegiSunterScorer.from_comparisons([
+        make_comparison('email_comparison', col_name='email'),
+    ])
+    out = scorer._recalibrate_empirical([], sample_size=100, seed=1)
+    assert out is scorer
+
+
+def test_values_equal_handles_arrays_lists_and_scalars():
+    from vectorer.scoring._levels import _values_equal
+
+    import numpy as _np
+
+    assert _values_equal(_np.array([1, 2]), _np.array([1, 2]))
+    assert not _values_equal(_np.array([1, 2]), _np.array([1, 3]))
+    assert not _values_equal(_np.array([1, 2]), [1, 2])  # array vs list mismatch
+    assert _values_equal([1, 2], [1, 2])
+    assert _values_equal([1, 2], (1, 2))  # list/tuple compare element-wise
+    assert not _values_equal([1, 2], [1, 3])
+    assert _values_equal("abc", "abc")
+    assert not _values_equal("abc", "abd")
+    assert not _values_equal(None, 0)
+
+
+def test_level_log_bayes_factors_saturates_at_zero_mu():
+    """m<=0 or u<=0 levels saturate to the log clip rather than log(0)."""
+    from vectorer.scoring._levels import _level_log_bayes_factors
+
+    spec = make_comparison('email_comparison', col_name='email').spec()
+    for level, m, u in zip(spec.levels, [1e-8, 0.0, 0.9, 0.9, 0.9], [1e-8, 0.9, 0.0, 0.5, 0.1]):
+        level.m = m
+        level.u = u
+    factors = _level_log_bayes_factors(spec)
+    assert all(f != float('-inf') for f in factors)
+    assert all(f != float('inf') for f in factors)
+
+
+def test_combined_bayes_equals_exp_of_log_total():
+    from vectorer.scoring import FellegiSunterScorer
+
+    scorer = FellegiSunterScorer.from_comparisons([
+        make_comparison('jaro_winkler_at_thresholds', col_name='first_name'),
+    ])
+    left = {'first_name': 'john', 'last_name': 's', 'date_of_birth': '2000-01-01', 'email': None}
+    pv = scorer._record_pair_values([left], [dict(left)])
+    assert scorer._combined_bayes(pv) == pytest.approx(
+        np.exp(scorer._log_total_bayes(pv)))
+    assert np.isfinite(scorer._combined_bayes(pv)).all()
+
+
+def test_empty_candidates_public_paths():
+    from vectorer.scoring import FellegiSunterScorer
+
+    scorer = FellegiSunterScorer.from_comparisons([
+        make_comparison('email_comparison', col_name='email'),
+    ])
+    left = {'email': 'a@x.com'}
+    assert scorer.score_batch(left, []) == pytest.approx(np.asarray([]))
+    assert scorer.match_weight_batch(left, []) == pytest.approx(np.asarray([]))
+    pos, w = scorer.score_and_weight_batch(left, [])
+    assert len(pos) == 0 and len(w) == 0
+    assert scorer.score_pairs([], []) == pytest.approx(np.asarray([]))
+    assert scorer.match_weight_pairs([], []) == pytest.approx(np.asarray([]))
+
+
+def test_fit_em_requires_comparisons_and_candidate_pairs():
+    from vectorer.scoring import FellegiSunterScorer
+
+    empty = FellegiSunterScorer.from_comparisons([])
+    with pytest.raises(ValueError, match="no comparisons"):
+        empty.fit_em([{'first_name': 'a'}])
+
+    scorer = FellegiSunterScorer.from_comparisons([
+        make_comparison('jaro_winkler_at_thresholds', col_name='first_name'),
+    ])
+    # All block values are None -> no candidate pairs.
+    with pytest.raises(RuntimeError, match="no blocking-rule candidate pairs"):
+        scorer.fit_em([{'first_name': None}, {'first_name': None}])
+
+
+def test_fit_em_prior_override_reports_value():
+    from vectorer.scoring import FellegiSunterScorer
+
+    scorer = FellegiSunterScorer.from_comparisons([
+        make_comparison('jaro_winkler_at_thresholds', col_name='first_name'),
+    ])
+    records = []
+    for i in range(40):
+        base = {'first_name': f'Name{i}', 'last_name': 's',
+                'date_of_birth': f'19{i % 40:02d}-01-01', 'email': None}
+        records.append(dict(base))
+        records.append(dict(base))
+    trained = scorer.fit_em(records, training_block_on=[('first_name',)],
+                            max_iterations=5, seed=1, prior=0.1234)
+    assert trained.to_settings()['probability_two_random_records_match'] == pytest.approx(0.1234)
+
+
+def test_union_expand_no_set_fields_returns_single_pair():
+    from vectorer.scoring import FellegiSunterScorer
+
+    scorer = FellegiSunterScorer.from_comparisons([
+        make_comparison('jaro_winkler_at_thresholds', col_name='first_name'),
+    ])
+    left = {'first_name': 'john', 'last_name': 's', 'date_of_birth': '2000-01-01', 'email': None}
+    rows = scorer._union_expand(left, dict(left), ['first_name'])
+    assert rows == [(left, dict(left))]
+
+    # A union pair whose other field has no set values still expands only the
+    # set field; a record with no frozensets among its compared fields is
+    # returned unchanged.
+    right = {'first_name': frozenset({'john', 'jane'}), 'last_name': 's',
+             'date_of_birth': '2000-01-01', 'email': None}
+    expanded = scorer._union_expand(left, right, ['first_name', 'last_name'])
+    assert len(expanded) == 2
+    assert {r['first_name'] for _, r in expanded} == {'john', 'jane'}
+
+
+def test_score_pairs_with_union_lift_returns_max():
+    from vectorer.scoring import FellegiSunterScorer
+
+    scorer = FellegiSunterScorer.from_comparisons([
+        make_comparison('jaro_winkler_at_thresholds', col_name='first_name'),
+        make_comparison('date_of_birth_comparison', col_name='date_of_birth'),
+    ])
+    # A record holding a frozenset of alternatives should score as the max over
+    # its members, and the non-union sibling method must not be called.
+    member = {'first_name': 'john', 'last_name': 's', 'date_of_birth': '2000-01-01', 'email': None}
+    union = {'first_name': frozenset({'john', 'zzzz'}), 'last_name': 's',
+             'date_of_birth': '2000-01-01', 'email': None}
+    assert scorer.score(union, member) == pytest.approx(1.0)
+
+
+def test_from_comparisons_accepts_resolved_dicts_and_specs():
+    from vectorer.scoring import FellegiSunterScorer
+
+    comp = make_comparison('email_comparison', col_name='email')
+    # _as_specs handles Comparison, ComparisonSpec, and dict forms.
+    from vectorer.comparisons import ComparisonSpec
+
+    spec = comp.spec()
+    as_dict = comp.resolved()
+    for source in ([comp], [spec], [as_dict]):
+        scorer = FellegiSunterScorer.from_comparisons(source)
+        assert scorer.comparisons
+    with pytest.raises(TypeError, match="expected Comparison"):
+        FellegiSunterScorer.from_comparisons([object()])
+
+
+def test_weights_tf_table_returns_none_for_empty_column():
+    from vectorer.scoring._weights import _build_tf_table
+
+    assert _build_tf_table('email', [{'email': None}, {'email': None}]) is None
+    assert _build_tf_table('email', []) is None
+    t = _build_tf_table('email', [{'email': 'a@x.com'}, {'email': 'b@x.com'}, {'email': 'a@x.com'}])
+    assert t['a@x.com'] == pytest.approx(2 / 3)

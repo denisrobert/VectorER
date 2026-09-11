@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`vectorer.scoring` module split into a package** — ``scoring.py`` (~1500
+  lines, one ~1100-line class) is now ``scoring/`` with focused modules:
+  `_constants` (DEFAULT_PRIOR / DEFAULT_THRESHOLD / log clip),
+  `_levels` (level assignment + m/u helpers), `_weights` (WeightTable),
+  `_construction` (constructor + serialization + input normalization),
+  `_inference` (scalar evaluation + public scoring API), `_union`
+  (Union-Class existential lift, split into its own file),
+  `_training` (``calibrate_from_pairs`` / ``fit_em`` / prior recovery),
+  `_candidates` (blocking-rule candidate generation, fuzzy keys, pair
+  sampling), `_splink` (Splink importer), and `_scorer` (the assembled
+  ``FellegiSunterScorer``).  ``FellegiSunterScorer`` is composed from five
+  focused mixins; the public API surface is unchanged and the existing
+  ``from vectorer.scoring import ...`` imports keep working.  Pure
+  reorganization -- no behaviour change (full test suite green).
+- **`FellegiSunterScorer.from_comparisons` accepts resolved comparison dicts**
+  — ``_as_comparisons`` now also handles raw ``{"type", "params", "levels"}``
+  entries (matching ``_as_specs``), so a resolved settings-dict entry can be
+  passed directly as a comparison source instead of silently being dropped
+  from ``scorer.comparisons``.  Behavioural bug-fix surfaced by the post-
+  refactor coverage tests.
+- **Test-suite coverage of the scoring package** — added coverage-driven tests
+  for the split-out modules (multi-column blocking rules, full-enumeration
+  pair sampling, `_values_equal` array/list branches, log-bayes saturation,
+  empty-candidate public paths, `fit_em` error paths + `prior=` override,
+  Union-Class no-set-field expansion and max-lift, dict-form ``from_cls``,
+  TF-table helpers).  Package coverage rose from 87% to 92%.
+
 ### Added
 
 - **`benchmarks/benchmark_yancey_enrichment.py`** — benchmark that tests
