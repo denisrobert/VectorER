@@ -70,6 +70,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`QdrantVectorDatabase` round-trip optimisations + live-server benchmark** —
+  the adapter now fetches hit `payloads` in the same search call as the index
+  query and serves the subsequent per-candidate `record_at` calls from that
+  cache (k+1 network round-trips per `resolve` -> 1), and caches the point
+  count so `block`'s `len()` cap no longer issues a per-query `count`.  New
+  `benchmarks/benchmark_incremental_er_qdrant.py` measures the incremental
+  (online) pipeline against a live Qdrant store: ingest timing split into
+  embedding vs upsert, cold per-query latency with optional phase breakdown,
+  and ground-truth blocking quality.  Use `127.0.0.1` (not `localhost`) for
+  local Qdrant -- `localhost` can resolve to `::1` while Qdrant listens on
+  IPv4 only, adding ~5 s per call.  The `.docs/distributed_er.md` now
+  documents the in-memory vs external-store latency/dataset-size trade-off.
 - **`OpenAIEmbedding` keyless local-server support** — ``api_key=None`` (with
   no ``OPENAI_API_KEY`` set) is now allowed when ``base_url`` points at a
   local OpenAI-compatible endpoint (Ollama, LM Studio, vLLM, etc.); the

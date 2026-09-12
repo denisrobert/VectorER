@@ -26,7 +26,7 @@ Example::
     from qdrant_client import QdrantClient
     from vectorer.vectorstore_adapters import QdrantVectorDatabase
 
-    qclient = QdrantClient(host="localhost", port=6333)
+    qclient = QdrantClient(host="127.0.0.1", port=6333)
     db = QdrantVectorDatabase(embedder=embedder, client=qclient,
                               collection="people", distance=Distance.COSINE)
     db.add(reference_records)
@@ -122,6 +122,14 @@ class QdrantVectorDatabase(VectorDatabase[dict]):
             )
         self._distance = distance or Distance.COSINE
         _ensure_collection(self._client, self._collection, size, self._distance)
+        # Payloads fetched alongside a search hit (position -> payload dict).
+        # ``resolve`` fetches the top-k candidate records one-by-one via
+        # ``record_at``; serving those from the search's own payloads avoids k
+        # extra network round-trips per query (k+1 -> 1).
+        self._payload_cache: dict[int, dict] = {}
+        # Cached point count; kept in sync by add/update/delete so the per-query
+        # ``len()`` in blocking doesn't pay a full ``count`` round-trip.
+        self._len_cache: Optional[int] = None
 
     # -- VectorDatabase -----------------------------------------------------
 
@@ -155,6 +163,7 @@ class QdrantVectorDatabase(VectorDatabase[dict]):
                 )
             )
         self._client.upsert(collection_name=self._collection, points=points)
+        self._len_cache = start + len(records)
 
     def update(self, records: Sequence[dict], positions: Sequence[int]) -> None:
         """Replace the payload/vector at each given position."""
@@ -166,16 +175,24 @@ class QdrantVectorDatabase(VectorDatabase[dict]):
             text = self._embed_text(rec)
             vec = list(self._embedder.embed(text))
             points.append(models.PointStruct(id=int(pos), vector=vec, payload={"record": rec}))
+            self._payload_cache.pop(int(pos), None)
         self._client.upsert(collection_name=self._collection, points=points)
 
     def delete(self, positions: Sequence[int]) -> None:
         """Delete the points at ``positions``."""
+        for pos in positions:
+            self._payload_cache.pop(int(pos), None)
         self._client.delete(
             collection_name=self._collection,
             points_selector=[int(p) for p in positions],
         )
+        if self._len_cache is not None:
+            self._len_cache = max(0, self._len_cache - len(list(positions)))
 
     def record_at(self, position: int) -> dict:
+        cached = self._payload_cache.get(int(position))
+        if cached is not None:
+            return cached
         res = self._client.retrieve(
             collection_name=self._collection, ids=[int(position)], with_payload=True
         )
@@ -185,29 +202,42 @@ class QdrantVectorDatabase(VectorDatabase[dict]):
 
     def _search(self, query: Any, k: int) -> tuple[list[int], list[float]]:
         # Qdrant >= 1.15 uses query_points; older clients use search.
+        # Request the payloads in the same call so resolve's per-candidate
+        # record_at can be served from the cache (k+1 round-trips -> 1).
         search = getattr(self._client, "query_points", None)
         if search is not None:
             res = search(
                 collection_name=self._collection,
                 query=query,
                 limit=int(k),
-                with_payload=False,
+                with_payload=True,
             )
         else:
             res = self._client.search(
                 collection_name=self._collection,
                 query_vector=query,
                 limit=int(k),
-                with_payload=False,
+                with_payload=True,
             )
-        # Both forms return a list of hit objects with .id and .score.
+        # Both forms return a list of hit objects with .id, .score, .payload.
         hits = getattr(res, "points", None) or res
-        indices = [int(h.id) for h in hits]
-        scores = [float(h.score) for h in hits]
+        indices: list[int] = []
+        scores: list[float] = []
+        for h in hits:
+            index = int(h.id)
+            indices.append(index)
+            scores.append(float(h.score))
+            payload = getattr(h, "payload", None)
+            if payload:
+                record = payload.get("record", {})
+                if record:
+                    self._payload_cache[index] = dict(record)
         return indices, scores
 
     def __len__(self) -> int:
-        return int(self._client.count(collection_name=self._collection).count)
+        if self._len_cache is None:
+            self._len_cache = int(self._client.count(collection_name=self._collection).count)
+        return self._len_cache
 
 
 def _ensure_collection(client, collection: str, size: int, distance) -> None:

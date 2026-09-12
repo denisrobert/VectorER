@@ -70,6 +70,8 @@ def main() -> None:
                         help="skip the mdbr (hosted API) incremental ROC run")
     parser.add_argument("--skip-compare", action="store_true",
                         help="skip the vs-original incremental latency comparison")
+    parser.add_argument("--skip-qdrant", action="store_true",
+                        help="skip the live-Qdrant incremental latency benchmark")
     parser.add_argument("--n-procs", type=int, default=8,
                         help="worker count for the EM bulk benchmark (default 8)")
     parser.add_argument("--dry-run", action="store_true",
@@ -185,6 +187,19 @@ def main() -> None:
         ], tag="incremental latency vs original", show_output=True)
     else:
         print("\n=== [skip] vs-original comparison (per --skip-compare) ===\n", flush=True)
+
+    # ---- 5b. Incremental latency against a live Qdrant store -------------
+    # (optional: requires a reachable Qdrant server)
+    if not args.skip_qdrant:
+        run([
+            str(PY), "benchmarks/benchmark_incremental_er_qdrant.py",
+            "--url", "http://127.0.0.1:6333",
+            "--n-references", "20000", "--query-count", "100",
+            "--breakdown", "--recreate",
+            "--output", "results/incremental_qdrant_latency.json",
+        ], tag="incremental latency (Qdrant, 20k refs)", show_output=True)
+    else:
+        print("\n=== [skip] Qdrant benchmark (per --skip-qdrant) ===\n", flush=True)
 
     # ---- 6. Incremental ROC + confusion matrices -------------------------
     for embedder, out in [

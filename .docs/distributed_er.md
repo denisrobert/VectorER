@@ -58,7 +58,7 @@ from qdrant_client.http.models import Distance
 from vectorer.incremental import IncrementalPipeline
 from vectorer.vectorstore_adapters import QdrantVectorDatabase
 
-client = QdrantClient(host="localhost", port=6333)
+client = QdrantClient(host="127.0.0.1", port=6333)
 db = QdrantVectorDatabase(embedder=embedder, client=client,
                           collection="people", vector_size=384,
                           distance=Distance.COSINE)
@@ -71,6 +71,48 @@ Only the index and the record payloads go remote; the embedding model and the
 FS scorer stay local.  The adapter is a `VectorDatabase` (any `index.search`/
 `record_at`/`add`/`__len__` back end works the same), so this is the
 contribution-friendly seam for other vector DBs.
+
+## Latency trade-off: in-memory vs external store
+
+The benchmark numbers below come from the same machine, the same hashing
+embedder (384-d), the same k=20, and the same 100 close-variant queries, so
+they isolate the *store*:
+
+| store | refs | mean /query | p50 | p95 | p99 |
+|---|---|---|---|---|---|
+| in-memory `FlatIndex` (`incremental_latency.json`) | 20 000 | 4.7 ms | 4.7 ms | 5.7 ms | 7.0 ms |
+| in-memory `FlatIndex` (`incremental_latency_paperscale.json`) | 50 000 | 5.7 ms | 5.7 ms | 7.0 ms | 7.6 ms |
+| Qdrant server (`incremental_qdrant_latency.json`) | 20 000 | 17.3 ms | 16.1 ms | 33.8 ms | 48.4 ms |
+
+**In-memory scales in latency with dataset size** — the local `FlatIndex` adds
+a few microseconds/ms per extra record (a linear scan of the embedding matrix),
+so 20k → 50k costs about +1 ms/query.
+
+**The external store adds a fixed per-query round-trip** but its search cost is
+essentially flat in dataset size (ANN index on the server): the 20k-Qdrant
+number is ~3.6× the in-memory 20k number, and the gap does not widen as the
+collection grows.  The adapter already keeps the query to **one** server
+round-trip (payloads fetched in the same search call, count cached), so the
+Qdrant overhead is dominated by network latency — roughly 13 ms in the numbers
+above, independent of N.
+
+Choose the store on where the curve crosses:
+
+- **Small / single-node reference stores** (≤ ~50k records, all scoring on one
+  host): in-memory `FlatIndex` is strictly better — no network hop.
+- **Huge / multi-node reference stores** (one machine can't hold the index or
+  the memory budget, or ingestion is shared): the fixed round-trip cost is the
+  *same per query regardless of N*, so Qdrant becomes the right choice as N
+  grows — the +13 ms is amortized against an in-memory index that either does
+  not fit, is shared across a fleet, or would need to page.
+
+Two practical notes from the benchmark:
+
+- Use `127.0.0.1`, not `localhost`, for local Qdrant: `localhost` can resolve
+  to `::1` (IPv6) while Qdrant listens on IPv4 only, which adds ~5 s per call.
+- The Qdrant benchmark is `benchmarks/benchmark_incremental_er_qdrant.py`
+  (`--recreate` rebuilds the collection; `--breakdown` splits embed / Qdrant
+  block / scorer).
 
 ## Building blocks reference
 
