@@ -90,6 +90,24 @@ def test_every_registered_comparison_builds(name):
     assert comparison.output_column_name() == spec.output_column_name
 
 
+@pytest.mark.parametrize("name", sorted(REGISTRY.names()))
+def test_last_level_is_else_fallback(name):
+    """Every built-in comparison ends with the ELSE fallback level.
+
+    ``_assign_levels`` assigns the *last* level to every pair that matches no
+    earlier test, so that final level must carry ``test=None`` (the "All other
+    comparisons" catch-all).  A test-bearing final level would silently label
+    unmatched pairs as matches of that level.
+    """
+    kwargs = dict(REQUIRED_KWARGS.get(name, {}))
+    if "col_name" in REGISTRY.fields_of(name) and "col_name" not in kwargs:
+        kwargs["col_name"] = "field"
+    spec = make_comparison(name, **kwargs).spec()
+    last = spec.levels[-1]
+    assert last.test is None
+    assert not last.is_null
+
+
 def test_every_built_level_has_default_mu():
     """The default m/u are assigned to every level."""
     comparison = make_comparison(

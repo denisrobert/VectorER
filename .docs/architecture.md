@@ -22,7 +22,7 @@ framework assumes a distributed query engine, a SQL planner, or an external
 linkage service — only NumPy for the scoring math and FAISS for approximate
 nearest-neighbour blocking [11] (see
 [`src/vectorer/sim.py`](../src/vectorer/sim.py),
-[`src/vectorer/comparisons.py`](../src/vectorer/comparisons.py)).
+[`src/vectorer/comparisons/`](../src/vectorer/comparisons)).
 
 Everything downstream of parsing consumes the same primitive: a *record* is a
 plain `Mapping[str, Any]`. Records flow through shared building blocks in two
@@ -36,9 +36,9 @@ The package is organised around contracts rather than a monolithic pipeline:
 | `embeddings.py` | `EmbeddingModel` interface + reference implementations (sentence-transformers, OpenAI API, deterministic hashing) |
 | `vectorstores.py` | `IndexingStrategy` (ANN), `VectorDatabase` (records + vectors + index) |
 | `blocking.py` | `VectorBlocker` (top-k search), `CanopyIndex` (k-means multi-assignment) |
-| `comparisons.py` | Extensible Fellegi-Sunter comparison set (19 registered options) |
+| `comparisons/` | Extensible Fellegi-Sunter comparison set, packaged by family (19 registered options) |
 | `sim.py` | Vectorized similarity/distance primitives (Jaro, JW, edit dist, date, geo, list) |
-| `scoring.py` | `WeightTable` + `FellegiSunterScorer`: level assignment, bayes factors, calibration, EM |
+| `scoring/` | `WeightTable` + `FellegiSunterScorer`: level assignment, bayes factors, calibration, EM |
 | `classification.py` | FS decision rule (match / possible-match / non-match) |
 | `clustering.py` | Swoosh (G-Swoosh), cluster assignments, representatives |
 | `incremental.py` | **Operational mode 1**: streaming/online resolution |
@@ -281,11 +281,11 @@ ComparisonSpec
   ├─ prescore             (opt): one vectorized pass computing shared score
   │                        arrays for the batch (e.g. a single Jaro-Winkler
   │                        array consumed by every threshold level)
-  └─ levels (ordered)
+  └─ levels (ordered, REQUIRED order: MOST -> LEAST agreement, ELSE last)
        ├─ null level      (bayes factor = 1, i.e. no evidence)
        ├─ agreement levels (vectorized predicate over the batch,
        │                    e.g. jw >= 0.9, jw >= 0.7, ...)
-       └─ ELSE level      (catch-all)
+       └─ ELSE level      (catch-all; MUST be the final level, test=None)
 ```
 
 Pipeline:
@@ -332,6 +332,15 @@ Key properties:
   weight ($+10$). This scheme gives well-behaved scores out of the box (e.g. a
   single exact email match under a $10^{-4}$ prior yields posterior $0.0929$) and is
   what the training sub-mode replaces with data-driven $m/u$.
+- **Level ordering contract**: a pair is assigned its **first matching** level;
+  every pair that matches no agreement level falls to the **final ELSE
+  catch-all** (``test=None``).  The ELSE level *must* be the last entry and
+  *must* carry no test -- if the last level had a real predicate, unmatched
+  pairs would be silently labelled as matches of that level, corrupting every
+  score that depends on the fallback.  The ``make_comparison`` factories
+  always append `_else_level()` last; custom comparisons registered via
+  `register_comparison` must do the same (enforced by a test across all
+  registered comparisons).
 - **Weighted score = single evaluation**: `score_and_weight_batch` returns
   posterior and match weight from one model evaluation.
 - **Union-Class existence lift**: a compared field whose value is a
@@ -362,7 +371,7 @@ population), implementing frequency-based matching [4]. Base priors default to
 $10^{-4}$; the classifier default threshold is $0.85$ (operating-score cut-off,
 cf. FS decision rules [3][5]).
 
-### 4.1 Comparison registry (`comparisons.py`)
+### 4.1 Comparison registry (`comparisons/`)
 
 The *function set* is extensible and covers 19 options spanning the standard
 attribute-comparison families used in record linkage [14]:

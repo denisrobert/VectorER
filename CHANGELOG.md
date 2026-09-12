@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`vectorer.comparisons` module split into a package** — ``comparisons.py``
+  (~1500 lines mixing ~700 lines of factories with the registry/serialization
+  plumbing) is now ``comparisons/`` with focused modules: `_core`
+  (``PairValues``, ``Level``/``ComparisonSpec``, the default ``m/u`` scheme and
+  the shared level/prescore toolkit), `_distance_families` (the thresholded
+  distance group: exact, jaro, jaro_winkler, edit distance, jaccard, cosine,
+  array-intersect, distance-function, pairwise), `_temporal_families`
+  (date-of-birth, absolute date/time difference), `_structural_families`
+  (email, name, forename/surname, postcode, distance-in-km), `_custom`
+  (custom comparison + the time-decay wrapper), `_registry` (the name-keyed
+  registry + the single built-in manifest), and `_comparison` (the
+  ``Comparison`` object + ``make_comparison``/``make_comparisons`` /
+  ``comparison_set`` and serialization helpers).  The grouping axis is the
+  shared machinery each family rides on, so no single file exceeds ~340 lines
+  and family modules import only ``_core`` (never one another).  The public
+  API surface is unchanged and ``from vectorer.comparisons import ...`` keeps
+  working; the package re-exports every previously-imported name.  Pure
+  reorganization -- no behaviour change (full test suite green).
 - **`vectorer.scoring` module split into a package** — ``scoring.py`` (~1500
   lines, one ~1100-line class) is now ``scoring/`` with focused modules:
   `_constants` (DEFAULT_PRIOR / DEFAULT_THRESHOLD / log clip),
@@ -40,6 +58,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   empty-candidate public paths, `fit_em` error paths + `prior=` override,
   Union-Class no-set-field expansion and max-lift, dict-form ``from_cls``,
   TF-table helpers).  Package coverage rose from 87% to 92%.
+
+- **Documented and enforced the comparison level-ordering contract** — the
+  requirement that the **final level of every ``ComparisonSpec`` be the ELSE
+  fallback** (``test=None``, catching every pair that matches no earlier
+  level) is now documented in ``ComparisonSpec.build_spec``, the comparisons
+  module docstring and ``_assign_levels``.  It is a hard invariant, not a
+  convention: a test-bearing final level would silently label unmatched pairs
+  as matches of that level.  A parametrized test now verifies all 20 built-in
+  comparisons end with the fallback.
 
 ### Added
 

@@ -19,6 +19,18 @@ def _assign_levels(spec: ComparisonSpec, pv: PairValues) -> np.ndarray:
 
     The spec's optional ``prescore`` step computes the shared score arrays once
     per batch; every level's test then reads them from the cache.
+
+    **Required level-list contract** (violating it silently mis-labels
+    unmatched pairs):
+
+    * Levels must be ordered by **decreasing agreement** (best match first);
+      the first level whose ``test`` returns true owns the pair ("CASE"
+      priority).
+    * The **final level must be the ELSE fallback** -- a level with
+      ``test=None`` (see ``comparisons._else_level``).  Every pair that fails
+      all prior tests is assigned this last index.  If the last level carried a
+      real test, pairs matching *nothing* would be assigned the same index as
+      pairs matching that test, conflating the two.
     """
     n = pv.n
     cache = spec.prescore(pv) if spec.prescore is not None else {}

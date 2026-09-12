@@ -208,11 +208,24 @@ Three decisions per attribute:
    a near-exact band, a fuzzy band, and everything else. Too many thresholds
    over-fit the m/u and slow calibration.
 
-**Level-ordering matters.** In `vector-er` levels are ordered most-to-least
-agreement (`exact` before fuzzy), and a pair takes its *first matching* level.
-Keep that order: an attribute with thresholds `[0.9, 0.8, 0.7]` means "exact →
-very close → reasonably close → else", which is what the default m/u scheme
-assumes.
+**Level-ordering is a contract, not a convention.** In `vector-er` levels are
+ordered most-to-least agreement (`null` → `exact` → fuzzy → `else`), and a pair
+takes its *first matching* level. Keep that order: an attribute with thresholds
+`[0.9, 0.8, 0.7]` means "exact → very close → reasonably close → else", which is
+what the default m/u scheme assumes.
+
+There is one **hard requirement** on top of the ordering: the **last level of
+every comparison must be the ELSE fallback** — a level with no test (the "All
+other comparisons" catch-all). The scorer assigns the final level to every pair
+that matches *none* of the earlier tests. If the last level carried a real test
+instead, pairs matching *nothing* would be labelled the same as pairs matching
+that test — silently misclassifying every unmatched pair and corrupting every
+score that depends on the fallback. So:
+
+- keep `exact` (and the null level) *before* the fuzzy thresholds;
+- **always** end the comparison with the `else` catch-all (the built-ins from
+  `make_comparison` do this for you; when registering a custom comparison,
+  append it yourself).
 
 A sensible starting point for people (from the original project) is the set in
 §1: fuzzy first/last name, exact date-of-birth, exact+fuzzy email, fuzzy
