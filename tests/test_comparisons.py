@@ -1,5 +1,6 @@
 """Tests for the extensible Fellegi-Sunter comparison set (native, vectorized)."""
 
+import numpy as np
 import pytest
 
 from vectorer.comparisons import (
@@ -208,6 +209,50 @@ def test_custom_registration_is_extensible():
     comparison = make_comparison("my_custom", col_name="phone")
     assert comparison.output_column_name() == "phone"
     assert comparison.spec().levels[1].label == "Exact match on phone"
+
+
+def test_postcode_comparison_uk_default():
+    """The default country is UK (Splink-compatible), splitting 'SW1A 1AA'."""
+    from vectorer.sim import postcode_parts
+
+    assert postcode_parts("SW1A 1AA") == ("SW1A 1", "SW1A", "SW")
+    spec = make_comparison("postcode_comparison", col_name="postcode").spec()
+    # Exact + sector + district + area + else, so 5 non-null... plus null.
+    labels = [lv.label for lv in spec.levels]
+    assert "Exact match on sector of postcode" in labels
+    assert "Exact match on district of postcode" in labels
+    assert "Exact match on area of postcode" in labels
+
+
+def test_postcode_comparison_canada():
+    """country='CA' parses Canadian 'M5A 1A1' FSA/LDU postcodes."""
+    from vectorer.sim import postcode_parts
+
+    assert postcode_parts("M5A 1A1", "CA") == ("M5A 1", "M5A", "M")
+    assert postcode_parts("k1a 0b1", "ca") == ("k1a 0", "k1a", "k")
+    spec = make_comparison("postcode_comparison", col_name="postcode", country="CA").spec()
+    assert spec.levels[1].label == "Exact match on full postcode"
+
+
+def test_postcode_comparison_invalid_country_raises():
+    with pytest.raises(ValueError, match="unsupported postcode country"):
+        make_comparison("postcode_comparison", col_name="postcode", country="US").spec()
+
+
+def test_postcode_invalid_as_null_country_specific():
+    """invalid_postcodes_as_null validates against the selected format."""
+    c = make_comparison(
+        "postcode_comparison", col_name="postcode",
+        country="CA", invalid_postcodes_as_null=True,
+    )
+    spec = c.spec()
+    prescore_cache = spec.prescore(
+        __import__("vectorer.comparisons", fromlist=["PairValues"]).PairValues(
+            {"postcode": np.array(["M5A 1A1", "bad", None], dtype=object)},
+            {"postcode": np.array(["M5A 1A1", "M5A 1A1", "M5A 1A1"], dtype=object)},
+        )
+    )
+    assert list(prescore_cache["null"]) == [False, True, True]
 
 
 def test_make_comparisons_from_objects_and_dicts():

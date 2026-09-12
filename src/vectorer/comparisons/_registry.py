@@ -162,7 +162,8 @@ def _register_built_ins() -> None:
         fields=("forename_col_name", "surname_col_name"),
         defaults={"jaro_winkler_thresholds": [0.92, 0.88]})
     add("postcode_comparison", postcode_comparison_spec,
-        defaults={"invalid_postcodes_as_null": False, "km_thresholds": [1, 10, 100]})
+        defaults={"invalid_postcodes_as_null": False, "km_thresholds": [1, 10, 100],
+                  "country": "UK"})
     add("distance_in_km_at_thresholds", distance_in_km_at_thresholds_spec,
         fields=("lat_col", "long_col"),
         defaults={"km_thresholds": [1, 10, 100]})

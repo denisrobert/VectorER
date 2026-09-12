@@ -20,6 +20,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `benchmarks/benchmark_incremental_er.py` gained `--index {flat,hnsw}` +
   `--m`/`--ef-construction`/`--ef-search` to measure the exact-vs-approximate
   latency/recall curve in-memory.
+- **`postcode_comparison` country formats** — `postcode_parts` and
+  `postcode_comparison_spec` now accept a `country` argument (default **`UK`**,
+  kept for compatibility with Splink's `postcode_uk`), with the Canadian
+  `M5A 1A1` FSA+LDU format available via `country="CA"` and the supported
+  formats listed in `vectorer.sim.POSTCODE_PATTERNS`.  `invalid_postcodes_as_null`
+  validates against the selected format.  Unknown countries raise
+  `ValueError`.
 
 ### Changed
 

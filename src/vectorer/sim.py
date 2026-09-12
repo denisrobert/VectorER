@@ -646,11 +646,43 @@ def regexp_extract_group(value, pattern: str) -> str | None:
     return m.group(0)
 
 
-def postcode_parts(postcode: str) -> tuple[str | None, str | None, str | None]:
-    """``(sector, district, area)`` extracted with the standard postcode patterns."""
-    sector = regexp_extract_group(postcode, r"^[A-Za-z]{1,2}[0-9][A-Za-z0-9]? [0-9]")
-    district = regexp_extract_group(postcode, r"^[A-Za-z]{1,2}[0-9][A-Za-z0-9]?")
-    area = regexp_extract_group(postcode, r"^[A-Za-z]{1,2}")
+# Postcode formats by country.  Each is a dict of the regex patterns used to
+# slice a postcode into (sector, district, area) and to validate its full
+# form.  ``uk`` is the classic "SW1A 1AA" outward/inward format; ``ca`` is the
+# Canadian "M5A 1A1" FSA+LDU format (letter-digit-letter space-digit-letter-
+# digit).
+POSTCODE_PATTERNS: dict[str, dict[str, str]] = {
+    "uk": {
+        "full": r"^[A-Za-z]{1,2}[0-9][A-Za-z0-9]?\s[0-9][A-Za-z]{2}$",
+        "sector": r"^[A-Za-z]{1,2}[0-9][A-Za-z0-9]? [0-9]",
+        "district": r"^[A-Za-z]{1,2}[0-9][A-Za-z0-9]?",
+        "area": r"^[A-Za-z]{1,2}",
+    },
+    "ca": {
+        "full": r"^[A-Za-z][0-9][A-Za-z]\s[0-9][A-Za-z][0-9]$",
+        "sector": r"^[A-Za-z][0-9][A-Za-z] [0-9]",
+        "district": r"^[A-Za-z][0-9][A-Za-z]",
+        "area": r"^[A-Za-z]",
+    },
+}
+
+
+def postcode_parts(postcode: str, country: str = "UK") -> tuple[str | None, str | None, str | None]:
+    """``(sector, district, area)`` extracted with the standard postcode patterns.
+
+    ``country`` selects the format from :data:`POSTCODE_PATTERNS` (``"UK"`` for
+    the "SW1A 1AA" outward/inward format, ``"CA"`` for the Canadian
+    "M5A 1A1" FSA/LDU format); it is matched case-insensitively.
+    """
+    patterns = POSTCODE_PATTERNS.get(country.strip().lower())
+    if patterns is None:
+        raise ValueError(
+            f"unsupported postcode country {country!r}; choose from "
+            f"{sorted(k.upper() for k in POSTCODE_PATTERNS)}"
+        )
+    sector = regexp_extract_group(postcode, patterns["sector"])
+    district = regexp_extract_group(postcode, patterns["district"])
+    area = regexp_extract_group(postcode, patterns["area"])
     return sector, district, area
 
 

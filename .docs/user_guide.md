@@ -209,6 +209,11 @@ Three decisions per attribute:
      `absolute_time_difference`, `distance_in_km` (lat/long).
    - *Structured identifiers* → `email_comparison`, `postcode_comparison`,
      `date_of_birth_comparison`, `name_comparison`.
+     (`postcode_comparison` defaults to the **UK** format — `SW1A 1AA` — for
+     compatibility with Splink's `postcode_uk` comparison; pass
+     `make_comparison("postcode_comparison", col_name="postcode", country="CA")`
+     for Canadian `M5A 1A1` FSA+LDU postcodes, or any other supported
+     `country` — see `vectorer.sim.POSTCODE_PATTERNS`.)
    - When nothing built-in fits, register a custom comparison (a level whose
      test is a vectorized `test(PairValues, cache) -> mask` callable) or wrap an
      arbitrary distance function via `distance_function_at_thresholds`.

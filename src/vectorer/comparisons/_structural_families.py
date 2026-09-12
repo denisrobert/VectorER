@@ -27,8 +27,6 @@ from ._core import (
     _null_test,
 )
 
-_POSTCODE_FULL = r"^[A-Za-z]{1,2}[0-9][A-Za-z0-9]?\s[0-9][A-Za-z]{2}$"
-
 
 def email_comparison_spec(col_name: str) -> ComparisonSpec:
     def prescore(pv: PairValues) -> dict:
@@ -170,19 +168,36 @@ def postcode_comparison_spec(
     lat_col: Optional[str] = None,
     long_col: Optional[str] = None,
     km_thresholds: Sequence[float] = (1, 10, 100),
+    country: str = "UK",
 ) -> ComparisonSpec:
+    """Postcode comparison (exact + sector/district/area part levels).
+
+    ``country`` selects the postcode format, defaulting to ``"UK"`` for
+    compatibility with Splink's own ``postcode_uk`` comparison ("SW1A 1AA"
+    outward/inward format).  Set ``country="CA"`` for Canadian postcodes
+    ("M5A 1A1" FSA + LDU format).  See :data:`vectorer.sim.POSTCODE_PATTERNS`
+    for the supported formats.
+    """
+    full_pattern = sim.POSTCODE_PATTERNS.get(country.strip().lower())
+    if full_pattern is None:
+        raise ValueError(
+            f"unsupported postcode country {country!r}; choose from "
+            f"{sorted(k.upper() for k in sim.POSTCODE_PATTERNS)}"
+        )
+
     def prescore(pv: PairValues) -> dict:
         left = pv.left(col_name)
         right = pv.right(col_name)
-        parts_l = [sim.postcode_parts(str(v)) if v is not None else (None, None, None) for v in left]
-        parts_r = [sim.postcode_parts(str(v)) if v is not None else (None, None, None) for v in right]
+        parts_l = [sim.postcode_parts(str(v), country) if v is not None else (None, None, None) for v in left]
+        parts_r = [sim.postcode_parts(str(v), country) if v is not None else (None, None, None) for v in right]
         out = {"parts_l": parts_l, "parts_r": parts_r, "null": _isnan(left, right)}
         if invalid_postcodes_as_null:
+            full = full_pattern["full"]
             invalid = np.fromiter(
                 (
                     l is None or r is None
-                    or not re.fullmatch(_POSTCODE_FULL, str(l).strip())
-                    or not re.fullmatch(_POSTCODE_FULL, str(r).strip())
+                    or re.fullmatch(full, str(l).strip()) is None
+                    or re.fullmatch(full, str(r).strip()) is None
                     for l, r in zip(left, right)
                 ),
                 dtype=bool, count=pv.n,
