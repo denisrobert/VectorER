@@ -19,8 +19,8 @@ from ._levels import (
     _assign_levels,
     _level_defaults,
     _level_proportions,
-    _sigmoid,
 )
+from ._math import _sigmoid
 
 
 class TrainingMixin:

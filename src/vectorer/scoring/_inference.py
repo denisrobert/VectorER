@@ -17,7 +17,8 @@ import numpy as np
 
 from ..comparisons import PairValues
 from ._constants import _LOG_CLIP
-from ._levels import _assign_levels, _sigmoid, _values_equal
+from ._levels import _assign_levels
+from ._math import _sigmoid, _values_equal
 
 
 class InferenceMixin:

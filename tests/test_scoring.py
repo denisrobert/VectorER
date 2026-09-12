@@ -569,7 +569,7 @@ def test_recalibrate_empirical_returns_self_on_empty_population():
 
 
 def test_values_equal_handles_arrays_lists_and_scalars():
-    from vectorer.scoring._levels import _values_equal
+    from vectorer.scoring._math import _values_equal
 
     import numpy as _np
 

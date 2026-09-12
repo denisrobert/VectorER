@@ -29,6 +29,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   passed directly as a comparison source instead of silently being dropped
   from ``scorer.comparisons``.  Behavioural bug-fix surfaced by the post-
   refactor coverage tests.
+- **`scoring._math` module** — the numeric primitives `_sigmoid` and
+  `_values_equal` moved out of `scoring._levels` into a small shared
+  `scoring/_math.py`, since both are consumed by the inference and training
+  modules but are unrelated to level assignment.  Pure relocation -- no
+  behaviour change.
 - **Test-suite coverage of the scoring package** — added coverage-driven tests
   for the split-out modules (multi-column blocking rules, full-enumeration
   pair sampling, `_values_equal` array/list branches, log-bayes saturation,
