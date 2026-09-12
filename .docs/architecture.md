@@ -115,8 +115,10 @@ stage chain is:
 Characteristics:
 
 - **Reference store is a `VectorDatabase`** (default `InMemoryVectorDatabase`):
-  it owns the embedding model, the ANN index (`FlatIndex` over L2-normalized
-  vectors = cosine), and the record payloads the index positions map back to.
+  it owns the embedding model, the ANN index (`FlatIndex` — exact cosine over
+  L2-normalized vectors — or `HnswIndex`, the approximate O(log N) alternative
+  over the same cosine semantics), and the record payloads the index positions
+  map back to.
 - **Blocking is top-k vector search** (`VectorBlocker.block`): the query is
   embedded, run through the FAISS index, and the top-k nearest reference
   positions are returned with their blocking scores.
@@ -481,7 +483,7 @@ Persistence boundaries: scorer `save/load` (trained comparisons + prior),
 | What you want to change | Hook |
 |---|---|
 | Embedding model | implement `EmbeddingModel` (or `SentenceTransformerEmbedding` / `CharacterHashingEmbedding`) and pass `embedder=` — or wrap an already-instantiated, GPU/quantized model via `SentenceTransformerEmbedding(model=...)`; see `user_guide.md` §0 |
-| ANN index | implement `IndexingStrategy` (`FlatIndex` is the cosine reference) |
+| ANN index | implement `IndexingStrategy` (`FlatIndex` is the exact-cosine reference; `HnswIndex` the approximate O(log N) alternative) |
 | Reference store / scaling | implement `VectorDatabase` against an external (distributed) vector DB — see §7.1 |
 | Blocking geometry | implement a `VectorBlocker`-style blocker or a canopy variant feeding `CanopyIndex` |
 | Comparison set | `register_comparison` / `make_comparison`; custom levels are `test(PairValues, cache) -> mask` |

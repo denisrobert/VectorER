@@ -62,6 +62,11 @@ DEFAULT_MISSING_RATE = 0.3
 DEFAULT_CLOSE_VARIATION_RATE = 0.15
 DEFAULT_REFERENCE_COUNT = 20000
 
+# HNSW construction/search knobs (used by --index hnsw).
+HNSW_M = 32
+HNSW_EF_CONSTRUCTION = 128
+HNSW_EF_SEARCH = 128
+
 FIRST_NAMES = [
     "john", "mary", "robert", "susan", "james", "linda", "michael", "patricia",
     "david", "jennifer", "william", "elizabeth", "richard", "barbara", "joseph",
@@ -187,12 +192,29 @@ def build_pipeline(
     k: int,
     threshold: float,
     index_dir: Optional[str],
+    index_kind: str = "flat",
+    hnsw_m: int = HNSW_M,
+    hnsw_ef_construction: int = HNSW_EF_CONSTRUCTION,
+    hnsw_ef_search: int = HNSW_EF_SEARCH,
 ) -> tuple[IncrementalPipeline, dict[str, Any]]:
-    """Build (or reload) the reference store and return a cold incremental pipeline."""
+    """Build (or reload) the reference store and return a cold incremental pipeline.
+
+    ``index_kind`` selects the in-memory FAISS index: ``"flat"`` (exact cosine
+    via ``IndexFlatIP``, O(N) per query) or ``"hnsw"`` (approximate HNSW, O(log
+    N) per query; the ``hnsw_*`` knobs tune recall vs latency).
+    """
+    from vectorer.vectorstores import FlatIndex, HnswIndex
+
     timing: dict[str, Any] = {}
     if index_dir is not None:
         index_dir = Path(index_dir)
         index_dir.mkdir(parents=True, exist_ok=True)
+
+    def make_index(dimension: int) -> Any:
+        if index_kind == "hnsw":
+            return HnswIndex(m=hnsw_m, ef_construction=hnsw_ef_construction,
+                             ef_search=hnsw_ef_search)
+        return FlatIndex(normalize=True)
 
     store_path = Path(index_dir) / "index.faiss" if index_dir else None
     if store_path is not None and store_path.exists():
@@ -201,7 +223,8 @@ def build_pipeline(
         timing["index_load_seconds"] = time.perf_counter() - t0
     else:
         t0 = time.perf_counter()
-        database = InMemoryVectorDatabase(embedder, FlatIndex(normalize=True))
+        index = make_index(int(embedder.dimension or 0))
+        database = InMemoryVectorDatabase(embedder, index)
         database.add(records)
         timing["index_build_seconds"] = time.perf_counter() - t0
         if index_dir is not None:
@@ -357,6 +380,15 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--embedder", choices=["hashing", "sentence"], default="hashing",
                         help="'sentence' uses sentence-transformers + MiniLM; 'hashing' is deterministic")
+    parser.add_argument("--index", dest="index_kind", choices=["flat", "hnsw"], default="flat",
+                        help="in-memory FAISS index: 'flat' (exact cosine, O(N)) or "
+                             "'hnsw' (approximate HNSW, O(log N))")
+    parser.add_argument("--m", dest="hnsw_m", type=int, default=HNSW_M,
+                        help="HNSW graph edges per node (default %(default)s)")
+    parser.add_argument("--ef-construction", type=int, default=HNSW_EF_CONSTRUCTION,
+                        help="HNSW construction beam width (default %(default)s)")
+    parser.add_argument("--ef-search", type=int, default=HNSW_EF_SEARCH,
+                        help="HNSW search beam width (default %(default)s)")
     parser.add_argument("--index-dir", default=None,
                         help="persist the reference store here and reload it if present")
     parser.add_argument("--data-file", default=None,
@@ -400,8 +432,11 @@ def main() -> None:
 
     pipeline, timing = build_pipeline(
         records, embedder, k=args.blocking_k, threshold=args.threshold, index_dir=args.index_dir,
+        index_kind=args.index_kind,
+        hnsw_m=args.hnsw_m, hnsw_ef_construction=args.ef_construction,
+        hnsw_ef_search=args.ef_search,
     )
-    print(f"Index ready: {timing}")
+    print(f"Index ready ({args.index_kind}): {timing}")
 
     base = records
     n = min(args.query_count, len(base))
@@ -410,7 +445,7 @@ def main() -> None:
         for i in range(n)
     ]
     print(f"Resolving {len(queries):,} close-variant queries (k={args.blocking_k}, "
-          f"tau={args.threshold}, embedder={args.embedder})...")
+          f"tau={args.threshold}, embedder={args.embedder}, index={args.index_kind})...")
 
     stats = measure(pipeline, queries, args.breakdown)
     quality = blocking_quality(pipeline, base, queries)
@@ -428,6 +463,9 @@ def main() -> None:
             "seed": args.seed,
             "close_variation_rate": args.close_variation_rate,
             "embedder": args.embedder,
+            "index": args.index_kind,
+            **({"m": args.hnsw_m, "ef_construction": args.ef_construction,
+                "ef_search": args.ef_search} if args.index_kind == "hnsw" else {}),
         },
         "index": timing,
         "latency": stats,

@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`HnswIndex` — approximate in-memory FAISS HNSW index** — a new
+  `IndexingStrategy` alongside `FlatIndex`: `IndexHNSWFlat` with the inner-
+  product metric over L2-normalized vectors, so `search` returns cosine
+  scores exactly like the flat reference (`_scorer`-consistent).  Supports
+  incremental `add`, `save`/`load` (via `faiss.write_index`/`read_index`),
+  `reconstruct` (canopy blocking), and the standard HNSW knobs (`m`,
+  `ef_construction` set before insertion, `ef_search` per query).
+  `InMemoryVectorDatabase(embedding, HnswIndex(...))` plugs straight in;
+  `benchmarks/benchmark_incremental_er.py` gained `--index {flat,hnsw}` +
+  `--m`/`--ef-construction`/`--ef-search` to measure the exact-vs-approximate
+  latency/recall curve in-memory.
+
 ### Changed
 
 ### Fixed

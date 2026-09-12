@@ -128,6 +128,109 @@ class FlatIndex(IndexingStrategy):
         return np.asarray(result, dtype="float32")
 
 
+class HnswIndex(IndexingStrategy):
+    """Approximate HNSW inner-product index over L2-normalized vectors (cosine).
+
+    Mirrors :class:`FlatIndex`'s contract (normalized vectors so inner product
+    == cosine, ``search -> (indices, scores)``, incremental ``add`` /
+    ``save``/``load`` / ``reconstruct``) but uses FAISS's Hierarchical
+    Navigable Small World (HNSW) graph for approximate nearest-neighbour
+    search: **O(log N)** lookup instead of the flat index's O(N) scan.
+
+    Recall/latency are controlled by the standard HNSW knobs:
+
+    * ``M`` -- edges per graph node (higher = better recall, more memory).
+    * ``ef_construction`` -- beam width during insertion (higher = better
+      graph quality).  Must be set at construction (before ``add``).
+    * ``ef_search`` -- beam width during search (higher = better recall per
+      query, more time); can be changed after insertion.
+
+    FAISS is imported lazily so the framework stays importable in
+    environments where FAISS is not installed.
+    """
+
+    def __init__(
+        self,
+        normalize: bool = True,
+        m: int = 32,
+        ef_construction: int = 128,
+        ef_search: int = 128,
+    ) -> None:
+        import faiss
+
+        self._faiss = faiss
+        self.normalize = normalize
+        self.m = int(m)
+        self.ef_construction = int(ef_construction)
+        self.ef_search = int(ef_search)
+        self._index: Optional[Any] = None
+
+    def _ensure(self, dimension: int) -> None:
+        if self._index is None:
+            # IndexHNSWFlat defaults to L2 distance; inner product over
+            # L2-normalized vectors gives cosine *similarity* scores matching
+            # FlatIndex.  efConstruction is read at insert time, so it must be
+            # set before any add; efSearch is a per-query knob adjustable later.
+            index = self._faiss.IndexHNSWFlat(
+                int(dimension), self.m, self._faiss.METRIC_INNER_PRODUCT
+            )
+            index.hnsw.efConstruction = self.ef_construction
+            index.hnsw.efSearch = self.ef_search
+            self._index = index
+
+    @staticmethod
+    def _as_float32(vectors: Sequence[Vector]) -> np.ndarray:
+        return np.asarray(list(vectors), dtype="float32")
+
+    def add(self, vectors: Sequence[Vector]) -> None:
+        array = self._as_float32(vectors)
+        if array.size == 0:
+            return
+        self._ensure(int(array.shape[1]))
+        if self.normalize:
+            self._faiss.normalize_L2(array)
+        self._index.add(array)  # type: ignore[union-attr]
+
+    def search(self, query: Vector, k: int) -> Tuple[list[int], list[float]]:
+        self._ensure(len(query))
+        # efSearch may be tuned between queries without rebuilding the graph.
+        if self._index is not None:
+            self._index.hnsw.efSearch = self.ef_search  # type: ignore[union-attr]
+        q = np.asarray([query], dtype="float32")
+        if self.normalize:
+            self._faiss.normalize_L2(q)
+        kk = min(int(k), len(self))
+        scores, indices = self._index.search(q, kk)  # type: ignore[union-attr]
+        return list(indices[0]), list(scores[0])
+
+    def clear(self) -> None:
+        if self._index is not None:
+            self._index.reset()  # type: ignore[union-attr]
+
+    def __len__(self) -> int:
+        return 0 if self._index is None else int(self._index.ntotal)  # type: ignore[union-attr]
+
+    def save(self, path: Any) -> None:
+        if self._index is None:
+            raise RuntimeError("index is empty; nothing to save")
+        self._faiss.write_index(self._index, str(path))
+
+    @classmethod
+    def load(cls, path: Any, normalize: bool = True, **kwargs: Any) -> "HnswIndex":
+        import faiss
+
+        instance = cls(normalize=normalize, **kwargs)
+        instance._index = faiss.read_index(str(path))
+        return instance
+
+    def reconstruct(self, indices: Sequence[int]) -> np.ndarray:
+        """Return the stored vectors at ``indices`` (used by canopy blocking)."""
+        if self._index is None:
+            raise RuntimeError("index is empty")
+        result = np.vstack([self._index.reconstruct(int(i)) for i in indices])
+        return np.asarray(result, dtype="float32")
+
+
 class VectorDatabase(Generic[T]):
     """A store of reference records indexed by position.
 

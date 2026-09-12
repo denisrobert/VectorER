@@ -498,11 +498,13 @@ Embedding 50k records is the expensive, one-off step; persist it so a new
 process resolves without re-embedding:
 
 ```python
-from vectorer.vectorstores import InMemoryVectorDatabase, FlatIndex
+from vectorer.vectorstores import InMemoryVectorDatabase, FlatIndex, HnswIndex
 from vectorer.scoring import FellegiSunterScorer
 
 # build once...
 db = InMemoryVectorDatabase(embedder, FlatIndex(normalize=True))
+#   ...or swap in approximate HNSW search (O(log N)) for very large stores:
+#   db = InMemoryVectorDatabase(embedder, HnswIndex(m=32, ef_construction=128, ef_search=128))
 db.add(references)
 db.save("data/person_index")          # writes index.faiss + records.pkl + metadata.json
 

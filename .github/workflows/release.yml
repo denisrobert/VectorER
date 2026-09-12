@@ -48,7 +48,10 @@ jobs:
           version="${GITHUB_REF_NAME#v}"           # e.g. v0.4.1 -> 0.4.1
           file=CHANGELOG.md
           # Grab the section between "## [<version>]" and the next "## [".
-          notes="$(awk -v v="^## \\[$version\\]" '$0 ~ v {f=1; next} /^## \[/ {if (f) exit} f' "$file")"
+          # Use index() with a plain string (brackets unescaped) so awk's
+          # string-literal pass can't strip the regex escapes and turn
+          # "[0.5.3]" into a character class (which silently matched nothing).
+          notes="$(awk -v ver="[$version]" '$0 ~ /^## \[/ && index($0,ver) {f=1; next} f && $0 ~ /^## \[/ {exit} f' "$file")"
           if [ -z "${notes// /}" ]; then
             echo "No CHANGELOG entry for $version; falling back to generated notes."
             echo "body=" >> "$GITHUB_OUTPUT"
