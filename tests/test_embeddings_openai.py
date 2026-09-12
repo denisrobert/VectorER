@@ -84,6 +84,38 @@ def test_openai_requires_key():
             os.environ["OPENAI_API_KEY"] = old
 
 
+def test_openai_keyless_local_base_url(fake_api):
+    """A custom (local) base_url works without any API key."""
+    import os
+
+    old = os.environ.get("OPENAI_API_KEY")
+    os.environ.pop("OPENAI_API_KEY", None)
+    try:
+        emb = OpenAIEmbedding(api_key=None, model="fake-model", base_url=fake_api)
+        assert emb._key is None
+        assert emb.dimension == 3
+        s = sum(ord(c) for c in "hello")
+        assert emb.embed("hello") == pytest.approx([s + 1, s + 2, s + 3])
+    finally:
+        if old:
+            os.environ["OPENAI_API_KEY"] = old
+
+
+def test_openai_default_endpoint_still_requires_key_even_with_env():
+    """Keyless access to api.openai.com is rejected even when base_url is
+    explicitly set to the vendor endpoint."""
+    import os
+
+    old = os.environ.get("OPENAI_API_KEY")
+    os.environ.pop("OPENAI_API_KEY", None)
+    try:
+        with pytest.raises(ValueError, match="api key"):
+            OpenAIEmbedding(base_url="https://api.openai.com/v1")
+    finally:
+        if old:
+            os.environ["OPENAI_API_KEY"] = old
+
+
 def test_openai_prefers_sdk_client_when_available(fake_api):
     """When the ``openai`` package is installed, the SDK client is used."""
     from vectorer.embeddings import _make_openai_client

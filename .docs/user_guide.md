@@ -53,7 +53,16 @@ objects exposing `to_dict()` are coerced automatically
   the `dimensions` truncation.  Prefers the official `openai` SDK when
   installed (`pip install -e ".[openai]"`), otherwise falls back to a
   dependency-free `urllib` client.  Requires network + an API key (or a
-  `base_url=` pointing at a compatible self-hosted endpoint).
+  `base_url=` pointing at a compatible self-hosted endpoint — local
+  OpenAI-compatible servers such as Ollama, LM Studio or vLLM can be used
+  **without any API key**: leave `api_key=None` and pass `base_url=`).
+  When keyless, the `urllib` path omits the `Authorization` header entirely,
+  while the official SDK sends a harmless placeholder (`sk-local-keyless`);
+  servers without auth configured ignore both. Behind a proxy/gateway that
+  fail-closes on a conflicting or malformed `Authorization` header, prefer the
+  `urllib` path by not installing the `openai` package — servers that enforce
+  real auth (e.g. vLLM `--api-key`, a LiteLLM master key) reject both paths
+  alike.
 - `CharacterHashingEmbedding(dimension=384)` — deterministic, dependency-free
   hashed character n-gram embedder, and the default. Same dimensionality as
   MiniLM, instant, no download. Because it keys on character n-grams, a typo,

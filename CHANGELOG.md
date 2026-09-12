@@ -70,6 +70,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`OpenAIEmbedding` keyless local-server support** — ``api_key=None`` (with
+  no ``OPENAI_API_KEY`` set) is now allowed when ``base_url`` points at a
+  local OpenAI-compatible endpoint (Ollama, LM Studio, vLLM, etc.); the
+  ``urllib`` path omits the ``Authorization`` header entirely and the SDK
+  path passes a no-op placeholder key the server ignores.  The default
+  ``api.openai.com`` endpoint still requires a key.
 - **`benchmarks/benchmark_yancey_enrichment.py`** — benchmark that tests
   Yancey's match-enrichment procedure for improving EM (Yancey 2004, RRS
   #2004-01).  On the generated duplicate-bearing population it compares

@@ -31,6 +31,11 @@ Vector = Sequence[float]
 # Number of tokens sent per API request when batching.
 _OPENAI_BATCH_SIZE = 16
 
+# The default vendor endpoint.  Custom ``base_url`` values (e.g. a local
+# OpenAI-compatible server such as Ollama / LM Studio / vLLM) may be queried
+# without an API key.
+_DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
+
 
 class EmbeddingModel:
     """Interface implemented by every embedding model.
@@ -119,13 +124,19 @@ class OpenAIEmbedding(EmbeddingModel):
     Uses the ``openai`` Python package when installed (the preferred client),
     otherwise falls back to a minimal ``urllib`` client so the framework stays
     usable without extra dependencies.  The API key is read from the
-    ``OPENAI_API_KEY`` environment variable (or passed explicitly).
+    ``OPENAI_API_KEY`` environment variable (or passed explicitly); local
+    OpenAI-compatible servers can be used without any key (pass ``base_url=``
+    and leave ``api_key=None``).
 
     Parameters
     ----------
     api_key:
         OpenAI API key.  Defaults to the ``OPENAI_API_KEY`` environment
-        variable.
+        variable.  May be ``None`` (with no env var set) **when ``base_url``
+        points at a local OpenAI-compatible server** (Ollama, LM Studio, vLLM,
+        local proxies) that does not require authentication -- the request is
+        then sent without an ``Authorization`` header.  Keyless access to the
+        default ``api.openai.com`` endpoint is still rejected.
     model:
         Embedding model id, e.g. ``"text-embedding-3-large"``,
         ``"text-embedding-3-small"``, or ``"text-embedding-ada-002"``.
@@ -134,7 +145,8 @@ class OpenAIEmbedding(EmbeddingModel):
         trimming the output dimension).  ``None`` keeps the model's native
         dimensionality.
     base_url:
-        Optional override for the API endpoint (e.g. a proxy).  Defaults to
+        Optional override for the API endpoint (e.g. a local OpenAI-compatible
+        server such as ``http://localhost:11434/v1`` for Ollama).  Defaults to
         OpenAI's standard endpoint.
     batch_size:
         Number of texts sent per API request.
@@ -152,14 +164,18 @@ class OpenAIEmbedding(EmbeddingModel):
         timeout: float = 60.0,
     ) -> None:
         self._key = api_key or os.environ.get("OPENAI_API_KEY")
-        if not self._key:
+        self.base_url = (base_url or _DEFAULT_OPENAI_BASE_URL).rstrip("/")
+        # Keyless access is permitted only to custom (local) endpoints: the
+        # vendor endpoint always requires a key.
+        if not self._key and self.base_url == _DEFAULT_OPENAI_BASE_URL:
             raise ValueError(
                 "OpenAIEmbedding requires an api key: pass api_key= or set the "
-                "OPENAI_API_KEY environment variable"
+                "OPENAI_API_KEY environment variable (a key is required for the "
+                "default api.openai.com endpoint); custom base_url endpoints may "
+                "be used without a key"
             )
         self.model = model
         self.dimensions = dimensions
-        self.base_url = (base_url or "https://api.openai.com/v1").rstrip("/")
         self.batch_size = int(batch_size)
         self.timeout = float(timeout)
         # Prefer the official SDK when present; fall back to urllib.
@@ -193,10 +209,9 @@ class OpenAIEmbedding(EmbeddingModel):
         if self.dimensions is not None:
             body["dimensions"] = int(self.dimensions)
         data = json.dumps(body).encode("utf-8")
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self._key}",
-        }
+        headers = {"Content-Type": "application/json"}
+        if self._key:
+            headers["Authorization"] = f"Bearer {self._key}"
         req = urllib.request.Request(
             f"{self.base_url}/embeddings", data=data, headers=headers, method="POST"
         )
@@ -233,16 +248,22 @@ class OpenAIEmbedding(EmbeddingModel):
 
 
 def _make_openai_client(
-    api_key: str, base_url: str, timeout: float
+    api_key: Optional[str], base_url: str, timeout: float
 ) -> Optional[Any]:
     """Return an OpenAI SDK client when ``openai`` is installed, else ``None``.
 
-    ``None`` signals the urllib fallback path.
+    ``None`` signals the urllib fallback path.  When ``api_key`` is ``None``
+    (keyless local server) a placeholder is passed so the SDK constructor does
+    not raise; the local server ignores it.
     """
     try:
         from openai import OpenAI
 
-        return OpenAI(api_key=api_key, base_url=base_url, timeout=timeout)
+        return OpenAI(
+            api_key=api_key if api_key else "sk-local-keyless",
+            base_url=base_url,
+            timeout=timeout,
+        )
     except Exception:  # noqa: BLE001  (no openai package, or SDK init fails)
         return None
 
