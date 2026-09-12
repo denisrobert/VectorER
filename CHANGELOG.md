@@ -7,6 +7,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+## [0.5.3] - 2026-09-12
+
+### Added
+
+- **`QdrantVectorDatabase` round-trip optimisations + live-server benchmark** —
+  the adapter now fetches hit `payloads` in the same search call as the index
+  query and serves the subsequent per-candidate `record_at` calls from that
+  cache (k+1 network round-trips per `resolve` -> 1), and caches the point
+  count so `block`'s `len()` cap no longer issues a per-query `count`.  New
+  `benchmarks/benchmark_incremental_er_qdrant.py` measures the incremental
+  (online) pipeline against a live Qdrant store: ingest timing split into
+  embedding vs upsert, cold per-query latency with optional phase breakdown,
+  and ground-truth blocking quality.  The `.docs/distributed_er.md` now
+  documents the in-memory vs external-store latency/dataset-size trade-off.
+- **`OpenAIEmbedding` keyless local-server support** — ``api_key=None`` (with
+  no ``OPENAI_API_KEY`` set) is now allowed when ``base_url`` points at a
+  local OpenAI-compatible endpoint (Ollama, LM Studio, vLLM, etc.); the
+  ``urllib`` path omits the ``Authorization`` header entirely and the SDK
+  path passes a no-op placeholder key the server ignores.  The default
+  ``api.openai.com`` endpoint still requires a key.
+- **`benchmarks/benchmark_yancey_enrichment.py`** — benchmark that tests
+  Yancey's match-enrichment procedure for improving EM (Yancey 2004, RRS
+  #2004-01).  On the generated duplicate-bearing population it compares
+  plain EM, Yancey-enriched EM with prior recalibration, enriched m/u with a
+  fixed/swept prior, an oracle-prior arm, and default m/u on the same labelled
+  eval pairs (precision/recall/F1 across a tau grid).  Verifies that
+  enrichment rescues EM's sparse-match-class failure (recall 0.60 → 0.76), and
+  that freezing the prior at an operating value is what takes recall further
+  (F1 0.999 at prior 1e-3), confirming the prior-recalibration caveat.
+- **Benchmark eval-set validity — genuinely disjoint negatives + full
+  confusion matrix** — both the yancey enrichment and incremental benchmarks
+  previously drew their non-match eval pairs as *random index-vs-index pairs*,
+  which are invalid in this synthetic population: the tiny name grid makes any
+  two population records near-duplicates, so a working pipeline would
+  (correctly) match them.  They now use
+  ``benchmark_data.build_unrelated_negatives`` — freshly generated census-
+  distributed people whose ``(first, last, dob)`` identity is disjoint from the
+  population (colliding DOBs shifted +5 days, colliding emails nulled) — so a
+  correct resolver must *not* match them, and the precision/F1 numbers are
+  meaningful again.  The enrichment benchmark's ``prf`` now also emits the
+  full 2x2 confusion matrix (``tp``/``fp``/``fn``/``tn``) per tau.
+- **`benchmarks/benchmark_incremental_er_qdrant.py`** — see
+  `QdrantVectorDatabase` above; also wired into `benchmarks/run_all.py`
+  (gated by `--skip-qdrant`).
+- **Contribution guidelines** — `CONTRIBUTING.md` (discussion-first pull
+  requests, maintainer-controlled governance, declared-and-human-reviewed AI
+  contributions, testing requirements) and `CODE_OF_CONDUCT.md` (Contributor
+  Covenant v2.1), linked from the README.
+
 ### Changed
 
 - **`vectorer.comparisons` module split into a package** — ``comparisons.py``
@@ -41,77 +98,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   focused mixins; the public API surface is unchanged and the existing
   ``from vectorer.scoring import ...`` imports keep working.  Pure
   reorganization -- no behaviour change (full test suite green).
-- **`FellegiSunterScorer.from_comparisons` accepts resolved comparison dicts**
-  — ``_as_comparisons`` now also handles raw ``{"type", "params", "levels"}``
-  entries (matching ``_as_specs``), so a resolved settings-dict entry can be
-  passed directly as a comparison source instead of silently being dropped
-  from ``scorer.comparisons``.  Behavioural bug-fix surfaced by the post-
-  refactor coverage tests.
 - **`scoring._math` module** — the numeric primitives `_sigmoid` and
   `_values_equal` moved out of `scoring._levels` into a small shared
   `scoring/_math.py`, since both are consumed by the inference and training
   modules but are unrelated to level assignment.  Pure relocation -- no
   behaviour change.
-- **Test-suite coverage of the scoring package** — added coverage-driven tests
-  for the split-out modules (multi-column blocking rules, full-enumeration
-  pair sampling, `_values_equal` array/list branches, log-bayes saturation,
-  empty-candidate public paths, `fit_em` error paths + `prior=` override,
-  Union-Class no-set-field expansion and max-lift, dict-form ``from_cls``,
-  TF-table helpers).  Package coverage rose from 87% to 92%.
-
-- **Documented and enforced the comparison level-ordering contract** — the
-  requirement that the **final level of every ``ComparisonSpec`` be the ELSE
-  fallback** (``test=None``, catching every pair that matches no earlier
-  level) is now documented in ``ComparisonSpec.build_spec``, the comparisons
-  module docstring and ``_assign_levels``.  It is a hard invariant, not a
-  convention: a test-bearing final level would silently label unmatched pairs
-  as matches of that level.  A parametrized test now verifies all 20 built-in
-  comparisons end with the fallback.
-
-### Added
-
-- **`QdrantVectorDatabase` round-trip optimisations + live-server benchmark** —
-  the adapter now fetches hit `payloads` in the same search call as the index
-  query and serves the subsequent per-candidate `record_at` calls from that
-  cache (k+1 network round-trips per `resolve` -> 1), and caches the point
-  count so `block`'s `len()` cap no longer issues a per-query `count`.  New
-  `benchmarks/benchmark_incremental_er_qdrant.py` measures the incremental
-  (online) pipeline against a live Qdrant store: ingest timing split into
-  embedding vs upsert, cold per-query latency with optional phase breakdown,
-  and ground-truth blocking quality.  Use `127.0.0.1` (not `localhost`) for
-  local Qdrant -- `localhost` can resolve to `::1` while Qdrant listens on
-  IPv4 only, adding ~5 s per call.  The `.docs/distributed_er.md` now
-  documents the in-memory vs external-store latency/dataset-size trade-off.
-- **`OpenAIEmbedding` keyless local-server support** — ``api_key=None`` (with
-  no ``OPENAI_API_KEY`` set) is now allowed when ``base_url`` points at a
-  local OpenAI-compatible endpoint (Ollama, LM Studio, vLLM, etc.); the
-  ``urllib`` path omits the ``Authorization`` header entirely and the SDK
-  path passes a no-op placeholder key the server ignores.  The default
-  ``api.openai.com`` endpoint still requires a key.
-- **`benchmarks/benchmark_yancey_enrichment.py`** — benchmark that tests
-  Yancey's match-enrichment procedure for improving EM (Yancey 2004, RRS
-  #2004-01).  On the generated duplicate-bearing population it compares
-  plain EM, Yancey-enriched EM with prior recalibration, enriched m/u with a
-  fixed/swept prior, an oracle-prior arm, and default m/u on the same labelled
-  eval pairs (precision/recall/F1 across a tau grid).  Verifies that
-  enrichment rescues EM's sparse-match-class failure (recall 0.60 → 0.76), and
-  that freezing the prior at an operating value is what takes recall further
-  (F1 0.999 at prior 1e-3), confirming the prior-recalibration caveat.
-- **Benchmark eval-set validity — genuinely disjoint negatives + full
-  confusion matrix** — both the yancey enrichment and incremental benchmarks
-  previously drew their non-match eval pairs as *random index-vs-index pairs*,
-  which are invalid in this synthetic population: the tiny name grid makes any
-  two population records near-duplicates, so a working pipeline would
-  (correctly) match them.  They now use
-  ``benchmark_data.build_unrelated_negatives`` — freshly generated census-
-  distributed people whose ``(first, last, dob)`` identity is disjoint from the
-  population (colliding DOBs shifted +5 days, colliding emails nulled) — so a
-  correct resolver must *not* match them, and the precision/F1 numbers are
-  meaningful again.  The enrichment benchmark's ``prf`` now also emits the
-  full 2x2 confusion matrix (``tp``/``fp``/``fn``/``tn``) per tau.
-
-### Changed
-
 - **`fit_em` candidate pool construction (`_blocked_pairs`)** — the training
   pool now uses *fuzzy* blocking for single string columns (case/typo-flipped
   twin values land in the same trigram bucket as their base) and *per-rule
@@ -151,7 +142,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   own expected match rate.  ``fit_em`` now records the mixing share and blocked
   pair count on the returned scorer (carried through ``to_settings``/``from_settings``);
   ``method="yancey"`` raises ``ValueError`` when that metadata is absent.
-
+- **`benchmark_bulk_er_em.py` trains with Yancey enrichment by default** — the
+  EM bulk dedup scorer is now built from the enriched subset
+  (``--enrich-keep-frac 0.05``) followed by ``recalibrate_prior``
+  (``--recalibration-method``), matching the yancey benchmarks; plain EM on the
+  raw population collapses its sparse match class.  Pass
+  ``--enrich-keep-frac 0`` for the plain-EM comparison arm.
 - **Dataset-relative default `n_canopies` in the batch pipeline**: a fixed
   `512` default is replaced by a default resolved from the dataset size —
   `n_canopies = max(1, len(records) // 39)` (the FAISS k-means minimum-points
@@ -161,6 +157,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   use).  The canopy grid therefore scales with the number of records instead of
   over/under-partitioning small or large datasets.  Explicit `n_canopies=` is
   still honoured.
+
+### Fixed
+
+- **`FellegiSunterScorer.from_comparisons` accepts resolved comparison dicts**
+  — ``_as_comparisons`` now also handles raw ``{"type", "params", "levels"}``
+  entries (matching ``_as_specs``), so a resolved settings-dict entry can be
+  passed directly as a comparison source instead of silently being dropped
+  from ``scorer.comparisons``.  Behavioural bug-fix surfaced by the post-
+  refactor coverage tests.
+
+### Added (testing / contract)
+
+- **Test-suite coverage of the scoring package** — added coverage-driven tests
+  for the split-out modules (multi-column blocking rules, full-enumeration
+  pair sampling, `_values_equal` array/list branches, log-bayes saturation,
+  empty-candidate public paths, `fit_em` error paths + `prior=` override,
+  Union-Class no-set-field expansion and max-lift, dict-form ``from_cls``,
+  TF-table helpers).  Package coverage rose from 87% to 92%.
+- **Documented and enforced the comparison level-ordering contract** — the
+  requirement that the **final level of every ``ComparisonSpec`` be the ELSE
+  fallback** (``test=None``, catching every pair that matches no earlier
+  level) is now documented in ``ComparisonSpec.build_spec``, the comparisons
+  module docstring and ``_assign_levels``.  It is a hard invariant, not a
+  convention: a test-bearing final level would silently label unmatched pairs
+  as matches of that level.  A parametrized test now verifies all 20 built-in
+  comparisons end with the fallback.
 
 ## [0.5.2] - 2026-09-07
 
@@ -466,6 +488,7 @@ Initial public release of `vectorer` on PyPI.
 - **Documentation**: `README.md`, `.docs/architecture.md`, `.docs/user_guide.md`,
   `.source-papers/`.
 
+[0.5.3]: https://github.com/denisrobert/VectorER
 [0.5.2]: https://github.com/denisrobert/VectorER
 [0.5.1]: https://github.com/denisrobert/VectorER
 [0.5.0]: https://github.com/denisrobert/VectorER
