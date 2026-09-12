@@ -45,6 +45,17 @@ batch of candidate pairs at once, and the Fellegi-Sunter math (level assignment
   operation: what shards/streams across machines, what stays single-process by
   design (with caveats), and how to run it (Ray cluster + external vector DB).
 
+## Contributing
+
+Contributions are welcome — via [pull requests](CONTRIBUTING.md), following a
+**discussion-first** workflow (all changes must be agreed in a
+[GitHub discussion][discussions] before a PR is opened), and governed by the
+[Code of Conduct](CODE_OF_CONDUCT.md). AI-assisted contributions are accepted
+when declared and engineered by a human. See
+**[`CONTRIBUTING.md`](CONTRIBUTING.md)** for the full process.
+
+[discussions]: https://github.com/denisrobert/VectorER/discussions
+
 ## Installation
 
 `vectorer` is published on PyPI. Install it with `pip` (Python `>= 3.10`):
