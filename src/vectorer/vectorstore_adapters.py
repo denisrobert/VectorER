@@ -35,7 +35,7 @@ Example::
 
 from __future__ import annotations
 
-from typing import Any, Optional, Sequence
+from typing import Any, Callable, Optional, Sequence
 
 from .embeddings import EmbeddingModel
 from .records import to_record_dict
@@ -106,9 +106,12 @@ class QdrantVectorDatabase(VectorDatabase[dict]):
         self._embedder = embedder
         self._client = client
         self._collection = collection
-        self._embed_text = embed_text or (
-            lambda r: "\n".join(f"{k}: {v}" for k, v in r.items() if v is not None)
-        )
+        if embed_text is not None:
+            self._embed_text = embed_text
+        else:
+            from .records import embed_text as _default_embed_text
+
+            self._embed_text = lambda r: _default_embed_text(to_record_dict(r))
         self._index = _QdrantIndex(self)
 
         from qdrant_client.http import models  # type: ignore
@@ -140,6 +143,10 @@ class QdrantVectorDatabase(VectorDatabase[dict]):
     @property
     def index(self) -> IndexingStrategy:
         return self._index
+
+    @property
+    def embed_text(self) -> Callable[[dict], str]:
+        return self._embed_text
 
     def add(self, records: Sequence[dict]) -> None:
         """Embed the records and upsert them at positions ``add_offset..``.

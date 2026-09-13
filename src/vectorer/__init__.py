@@ -26,6 +26,8 @@ from .records import (
     Parser,
     RecordSchema,
     embed_text,
+    positional_embed_text,
+    template_embed_text,
     to_record_dict,
 )
 from .embeddings import (
@@ -101,6 +103,8 @@ __all__ = [
     "JsonParser",
     "JsonLinesParser",
     "embed_text",
+    "positional_embed_text",
+    "template_embed_text",
     "to_record_dict",
     # embeddings
     "EmbeddingModel",

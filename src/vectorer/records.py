@@ -118,6 +118,52 @@ def embed_text(
     return "\n".join(parts)
 
 
+#: The default record serializer: schema-agnostic ``"field: value"`` lines
+#: (see :func:`embed_text`).  This is what every store/pipeline uses unless an
+#: explicit ``embed_text=`` is supplied.
+EMBED_DEFAULT = embed_text
+
+
+def template_embed_text(template: str) -> Callable[[Record], str]:
+    """A serializer factory for a ``str.format_map``-style ``template``.
+
+    ``template_embed_text("Name: {first_name} {last_name}")`` returns a
+    single-argument callable suited to the ``embed_text=`` hooks.
+    """
+    def render(record: Record) -> str:
+        return template.format_map(record)
+    return render
+
+
+def positional_embed_text(
+    fields: Sequence[str],
+    delimiter: str = "|",
+    missing: Optional[str] = None,
+) -> Callable[[Record], str]:
+    """A serializer factory for **positional, schema-fixed** embedding text.
+
+    Renders values in ``fields`` order joined by ``delimiter`` -- ``v1|v2|v3``.
+    Because the columns are positional (not labelled), the field order **is**
+    the semantics: two records describing the same entity must use the same
+    ``fields`` order or they will embed to different texts.  ``missing`` is the
+    token substituted for ``None``/absent fields (default keeps an empty slot
+    between delimiters).
+
+    Note this strategy requires a fixed schema; the schema-agnostic default
+    (:data:`EMBED_DEFAULT`) reads whatever keys the record has.
+    """
+    def render(record: Record) -> str:
+        parts: list[str] = []
+        for name in fields:
+            value = record.get(name)
+            if value is None:
+                parts.append("" if missing is None else str(missing))
+            else:
+                parts.append(str(value))
+        return delimiter.join(parts)
+    return render
+
+
 class Parser(abc.ABC):
     """Abstract first stage: turn an inbound payload into a record mapping."""
 

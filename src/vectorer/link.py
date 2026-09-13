@@ -160,7 +160,9 @@ class LinkTable:
 
 
 def _default_embed_text(canonical_record: dict) -> str:
-    return "\n".join(f"{k}: {v}" for k, v in canonical_record.items() if v is not None)
+    from .records import embed_text
+
+    return embed_text(canonical_record)
 
 
 class RecordLinker:

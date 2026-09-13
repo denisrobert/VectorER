@@ -25,13 +25,15 @@ from typing import Any, Generic, Optional, Sequence, Tuple, TypeVar, Union
 import numpy as np
 
 from .embeddings import EmbeddingModel, Vector
-from .records import to_record_dict
+from .records import embed_text, to_record_dict
 
 T = TypeVar("T")
 
-# embed_text_of used by InMemoryVectorDatabase.__init__ as the default serializer
+# Default serializer used by InMemoryVectorDatabase: schema-agnostic
+# "field: value" lines (shared with the rest of the framework via
+# vectorer.records.embed_text).
 def embed_text_of(record: dict) -> str:
-    return "\n".join(f"{k}: {v}" for k, v in record.items() if v is not None)
+    return embed_text(record)
 
 
 class IndexingStrategy:
@@ -236,7 +238,10 @@ class VectorDatabase(Generic[T]):
 
     The database owns the embedding model, the indexing strategy, and the
     record payloads.  Positions returned by the index map back to records via
-    :meth:`record_at`.
+    :meth:`record_at`.  ``embed_text`` is the record serializer used both when
+    ingesting reference records and (via the blocker/pipeline) when embedding a
+    query -- the store's serializer must be the one used at query time, or the
+    vectors live in different text-spaces.
     """
 
     @property
@@ -245,6 +250,11 @@ class VectorDatabase(Generic[T]):
 
     @property
     def index(self) -> IndexingStrategy:
+        raise NotImplementedError
+
+    @property
+    def embed_text(self) -> Callable[[T], str]:
+        """The record serializer used for every embedding (ingest + query)."""
         raise NotImplementedError
 
     def add(self, records: Sequence[T]) -> None:
@@ -294,6 +304,10 @@ class InMemoryVectorDatabase(VectorDatabase[T]):
         self._embed_text = embed_text if embed_text is not None else (
             lambda r: embed_text_of(to_record_dict(r))
         )
+
+    @property
+    def embed_text(self) -> Callable[[T], str]:
+        return self._embed_text
 
     @property
     def embedding(self) -> EmbeddingModel:

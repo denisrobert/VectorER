@@ -43,13 +43,23 @@ class VectorBlocker:
         The store (embedding + index + record payloads) to search against.
     k:
         Default number of candidates to retrieve.
+    embed_text:
+        Record serializer used for the query embedding.  Defaults to the
+        store's own ``embed_text`` (so ingest and query agree on the text-
+        space); pass explicitly to override.
     """
 
-    def __init__(self, vector_database: VectorDatabase, k: int = 20) -> None:
+    def __init__(
+        self,
+        vector_database: VectorDatabase,
+        k: int = 20,
+        embed_text: Optional[Callable[[T], str]] = None,
+    ) -> None:
         if not isinstance(vector_database, VectorDatabase):
             raise TypeError("vector_database must be a VectorDatabase")
         self.vector_database = vector_database
         self.k = int(k)
+        self._embed_text = embed_text if embed_text is not None else vector_database.embed_text
 
     @classmethod
     def build(
@@ -58,6 +68,7 @@ class VectorBlocker:
         embedding: Any = None,
         index: Any = None,
         k: int = 20,
+        embed_text: Optional[Callable[[T], str]] = None,
     ) -> "VectorBlocker":
         """Build a blocker over ``records`` using sensible defaults."""
         from .embeddings import CharacterHashingEmbedding
@@ -65,7 +76,7 @@ class VectorBlocker:
 
         embedding = embedding or CharacterHashingEmbedding()
         index = index or FlatIndex(normalize=True)
-        database = InMemoryVectorDatabase(embedding, index)
+        database = InMemoryVectorDatabase(embedding, index, embed_text=embed_text)
         database.add(records)
         return cls(database, k)
 
@@ -85,7 +96,8 @@ class VectorBlocker:
         if kk <= 0:
             return []
         if query_vector is None:
-            text = self._embed_text(input_record)
+            record = to_record_dict(input_record)
+            text = self._embed_text(record)
             query_vector = self.vector_database.embedding.embed(text)
         indices, scores = self.vector_database.index.search(list(query_vector), kk)
         candidates: list[BlockedCandidate[T]] = []
@@ -100,11 +112,6 @@ class VectorBlocker:
                 )
             )
         return candidates
-
-    @staticmethod
-    def _embed_text(value: Any) -> str:
-        record = to_record_dict(value)
-        return "\n".join(f"{k}: {v}" for k, v in record.items() if v is not None)
 
 
 @dataclass

@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Pluggable record serializers for embedding** — the record → embedding-text
+  step is now a single injectable `Callable[[dict], str]` threaded through
+  every embed path (store, blocker, pipeline, builders), fixing the previous
+  inconsistency where the store accepted a custom serializer but the
+  query-time `_embed_text` helpers were hardcoded name/value (the vectors
+  would have lived in different text-spaces).  New serializers in
+  `vectorer.records`: `positional_embed_text(fields, delimiter="|", missing=)`
+  (schema-fixed, pipe-delimited values in field order — positional encoding
+  instead of field names, which has empirically improved recall),
+  `template_embed_text(...)`, and `EMBED_DEFAULT`.  The store's serializer is
+  exposed as `db.embed_text` and pipeline/blocker default to it; the
+  incremental latency benchmark gained
+  `--embed-text positional --schema first_name,last_name,...` for the recall
+  comparison.
 - **`HnswIndex` — approximate in-memory FAISS HNSW index** — a new
   `IndexingStrategy` alongside `FlatIndex`: `IndexHNSWFlat` with the inner-
   product metric over L2-normalized vectors, so `search` returns cosine

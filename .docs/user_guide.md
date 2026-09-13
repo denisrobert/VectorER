@@ -71,6 +71,41 @@ objects exposing `to_dict()` are coerced automatically
   the *best* choice, not just a cheap one. Switch to the sentence-transformer
   embedder when you need semantic blocking.
 
+#### Serialization strategies (how a record becomes embedding text)
+
+Before a record is embedded it is rendered to a string, and that rendering
+**must be identical between ingestion and query time** — the store embeds the
+reference records with it, and the blocker embeds each incoming query with the
+same serializer, so the vectors live in one text-space.  The framework exposes
+pluggable serializers and threads a single choice through every embed path:
+
+```python
+from vectorer.records import embed_text, positional_embed_text, template_embed_text
+
+# 1. Schema-agnostic (default): "field: value" lines, reads whatever keys the
+#    record has — works whether or not the schema is fixed.
+db = InMemoryVectorDatabase(embedder, FlatIndex(normalize=True))
+
+# 2. Positional / pipe-delimited: "v1|v2|v3" in field order — needs a FIXED
+#    schema (order is the semantics).  Relying on positional encoding instead
+#    of field names has empirically improved recall.
+from vectorer.records import positional_embed_text
+serializer = positional_embed_text(
+    ["first_name", "last_name", "date_of_birth", "email", "address"], delimiter="|")
+db = InMemoryVectorDatabase(embedder, FlatIndex(normalize=True), embed_text=serializer)
+
+# 3. Any callable(dict) -> str, e.g. a str.format_map template:
+serializer = template_embed_text("Name: {first_name} {last_name} ({date_of_birth})")
+```
+
+Because the store's serializer is exposed as `db.embed_text` and the pipeline /
+blocker default to it (`IncrementalPipeline(embed_text=...)` overrides when
+given), the ingest/query consistency is automatic rather than caller-discipline.
+`build_incremental_pipeline(..., embed_text=serializer)` and
+`build_batch_pipeline(..., embed_text=serializer)` accept the same hook; the
+incremental latency benchmark exposes it as
+`--embed-text positional --schema first_name,last_name,date_of_birth,email,address`.
+
 Everywhere the pipelines take an embedder, they take an *instance*, not a
 model name — so "the model" is whatever you hand over, already configured:
 

@@ -196,13 +196,16 @@ def build_pipeline(
     hnsw_m: int = HNSW_M,
     hnsw_ef_construction: int = HNSW_EF_CONSTRUCTION,
     hnsw_ef_search: int = HNSW_EF_SEARCH,
+    embed_text: Optional[Callable[[dict], str]] = None,
 ) -> tuple[IncrementalPipeline, dict[str, Any]]:
     """Build (or reload) the reference store and return a cold incremental pipeline.
 
     ``index_kind`` selects the in-memory FAISS index: ``"flat"`` (exact cosine
     via ``IndexFlatIP``, O(N) per query) or ``"hnsw"`` (approximate HNSW, O(log
-    N) per query; the ``hnsw_*`` knobs tune recall vs latency).
+    N) per query; the ``hnsw_*`` knobs tune recall vs latency).  ``embed_text``
+    is the record serializer; ``None`` = the default ``"field: value"`` lines.
     """
+    from vectorer.records import embed_text as _default_embed_text
     from vectorer.vectorstores import FlatIndex, HnswIndex
 
     timing: dict[str, Any] = {}
@@ -224,7 +227,7 @@ def build_pipeline(
     else:
         t0 = time.perf_counter()
         index = make_index(int(embedder.dimension or 0))
-        database = InMemoryVectorDatabase(embedder, index)
+        database = InMemoryVectorDatabase(embedder, index, embed_text=embed_text or _default_embed_text)
         database.add(records)
         timing["index_build_seconds"] = time.perf_counter() - t0
         if index_dir is not None:
@@ -261,7 +264,7 @@ def measure(pipeline: IncrementalPipeline, queries: Sequence[dict], breakdown: b
     for person in tqdm(queries, desc="resolving queries", unit="query"):
         if breakdown:
             te = time.perf_counter()
-            vector = db.embedding.embed(pipeline._embed_text(person))
+            vector = db.embedding.embed(pipeline.serialize(person))
             embed_times.append((time.perf_counter() - te) * 1000)
 
             tb = time.perf_counter()
@@ -401,12 +404,26 @@ def main() -> None:
                              "the records list")
     parser.add_argument("--breakdown", action="store_true",
                         help="also record embedding / FAISS blocking / scorer phase times")
+    parser.add_argument("--embed-text", choices=["default", "positional"], default="default",
+                        help="record serializer for embedding: 'default' (schema-agnostic "
+                             "'field: value' lines) or 'positional' (pipe-delimited values "
+                             "in --schema order; needs a fixed schema)")
+    parser.add_argument("--schema", default="first_name,last_name,date_of_birth,email,address",
+                        help="field order for --embed-text positional (comma-separated)")
     parser.add_argument("--compare", default=None,
                         help="path to an original-project latency artifact JSON (e.g. "
                              "results/erwhitepaper/online_resolver_latency.json) to tabulate "
                              "the new stack's latency against")
     parser.add_argument("--output", default="results/incremental_latency.json")
     args = parser.parse_args()
+
+    if args.embed_text == "positional":
+        from vectorer.records import positional_embed_text
+
+        schema = tuple(s.strip() for s in args.schema.split(",") if s.strip())
+        serializer = positional_embed_text(schema, delimiter="|")
+    else:
+        serializer = None
 
     random.seed(args.seed)
     if args.embedder == "sentence":
@@ -435,6 +452,7 @@ def main() -> None:
         index_kind=args.index_kind,
         hnsw_m=args.hnsw_m, hnsw_ef_construction=args.ef_construction,
         hnsw_ef_search=args.ef_search,
+        embed_text=serializer,
     )
     print(f"Index ready ({args.index_kind}): {timing}")
 
@@ -464,6 +482,8 @@ def main() -> None:
             "close_variation_rate": args.close_variation_rate,
             "embedder": args.embedder,
             "index": args.index_kind,
+            "embed_text": args.embed_text,
+            "schema": args.schema,
             **({"m": args.hnsw_m, "ef_construction": args.ef_construction,
                 "ef_search": args.ef_search} if args.index_kind == "hnsw" else {}),
         },

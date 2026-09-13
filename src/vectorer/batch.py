@@ -121,6 +121,9 @@ class BatchPipeline:
         Seed for the k-means training.
     tau:
         Swoosh merge threshold on the FS posterior.
+    embed_text:
+        Record serializer for embedding.  ``None`` = schema-agnostic
+        ``"field: value"`` lines (the default).
     """
 
     def __init__(
@@ -133,6 +136,7 @@ class BatchPipeline:
         canopy_seed: int = 42,
         tau: Optional[float] = None,
         merge: Callable[[Sequence, Sequence], tuple[Any, int]] = None,
+        embed_text: Optional[Callable[[dict], str]] = None,
     ) -> None:
         self.embedder = embedder
         self.scorer = scorer
@@ -140,6 +144,9 @@ class BatchPipeline:
         self.overlap_m = int(max(1, overlap_m))
         self.canopy_seed = int(canopy_seed)
         self.tau = float(tau) if tau is not None else scorer.threshold
+        self._embed_text = embed_text if embed_text is not None else (
+            lambda r: "\n".join(f"{k}: {v}" for k, v in r.items() if v is not None)
+        )
         from .clustering import select_representative
 
         self.merge = merge if merge is not None else select_representative
@@ -260,10 +267,6 @@ class BatchPipeline:
             timing=timing,
         )
 
-    @staticmethod
-    def _embed_text(record: dict) -> str:
-        return "\n".join(f"{k}: {v}" for k, v in record.items() if v is not None)
-
 
 def build_batch_pipeline(
     *,
@@ -275,8 +278,13 @@ def build_batch_pipeline(
     canopy_seed: int = 42,
     tau: float = DEFAULT_THRESHOLD,
     merge: Callable[[Sequence, Sequence], tuple[Any, int]] = None,
+    embed_text: Optional[Callable[[dict], str]] = None,
 ) -> BatchPipeline:
-    """Convenience constructor: default embedder + scorer from ``comparisons``."""
+    """Convenience constructor: default embedder + scorer from ``comparisons``.
+
+    ``embed_text`` sets the record serializer for embedding (``None`` = the
+    schema-agnostic ``"field: value"`` default).
+    """
     from .embeddings import CharacterHashingEmbedding
 
     embedding = embedder or CharacterHashingEmbedding()
@@ -292,4 +300,5 @@ def build_batch_pipeline(
         canopy_seed=canopy_seed,
         tau=tau,
         merge=merge,
+        embed_text=embed_text,
     )

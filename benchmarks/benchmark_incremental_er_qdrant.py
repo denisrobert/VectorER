@@ -278,7 +278,7 @@ def measure(pipeline: IncrementalPipeline, queries: Sequence[dict], breakdown: b
     for person in tqdm(queries, desc="resolving queries", unit="query"):
         if breakdown:
             te = time.perf_counter()
-            vector = db.embedding.embed(pipeline._embed_text(person))
+            vector = db.embedding.embed(pipeline.serialize(person))
             embed_times.append((time.perf_counter() - te) * 1000)
 
             tb = time.perf_counter()

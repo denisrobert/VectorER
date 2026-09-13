@@ -20,7 +20,7 @@ custom parser or a tuned blocker): :meth:`parse`, :meth:`block`,
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Optional, Sequence
+from typing import Any, Callable, Optional, Sequence
 
 from .blocking import BlockedCandidate, VectorBlocker
 from .classification import (
@@ -68,6 +68,9 @@ class IncrementalPipeline:
     scorer: FellegiSunterScorer
     k: int = 20
     tau: Optional[float] = None
+    #: Record serializer for embedding.  ``None`` = use the store's serializer
+    #: (so query embedding agrees with how the reference records were embedded).
+    embed_text: Optional[Callable[[dict], str]] = None
 
     @classmethod
     def from_store(
@@ -77,6 +80,7 @@ class IncrementalPipeline:
         *,
         k: int = 20,
         tau: Optional[float] = None,
+        embed_text: Optional[Callable[[dict], str]] = None,
     ) -> "IncrementalPipeline":
         """Serve incremental queries against an **already-embedded** store.
 
@@ -88,6 +92,8 @@ class IncrementalPipeline:
         :func:`build_incremental_pipeline`, this does **not** embed the
         reference records again; it wires the store straight into the pipeline.
 
+        ``embed_text`` overrides the store's record serializer for the query
+        embedding when given; by default the store's own serializer is used.
         Conveniently mirrors constructing ``IncrementalPipeline(vector_database=,
         scorer=, k=, tau=)`` directly, but names the intent and is the
         discoverable shortcut for the serving use case.
@@ -97,10 +103,16 @@ class IncrementalPipeline:
             scorer=scorer,
             k=k,
             tau=tau,
+            embed_text=embed_text,
         )
 
     def __post_init__(self) -> None:
-        self.blocker = VectorBlocker(self.vector_database, k=self.k)
+        self._serializer = (
+            self.embed_text
+            if self.embed_text is not None
+            else self.vector_database.embed_text
+        )
+        self.blocker = VectorBlocker(self.vector_database, k=self.k, embed_text=self._serializer)
         tau = self.tau if self.tau is not None else self.scorer.threshold
         self.classifier = ThresholdClassifier(tau=tau)
         self._embed_cache: Optional[list[float]] = None
@@ -111,9 +123,13 @@ class IncrementalPipeline:
         """Stage 1: coerce the inbound payload into a record mapping."""
         return to_record_dict(payload)
 
+    def serialize(self, record: dict) -> str:
+        """Render a record to the embedding text (the store's serializer)."""
+        return self._serializer(record)
+
     def embed(self, record: dict) -> Optional[list[float]]:
         """Stage 2: embed the parsed record (result cached on the resolution)."""
-        text = self._embed_text(record)
+        text = self._serializer(record)
         vector = self.vector_database.embedding.embed(text)
         self._embed_cache = [float(x) for x in vector]
         return self._embed_cache
@@ -249,12 +265,6 @@ class IncrementalPipeline:
             for payload in payloads
         ]
 
-    # -- helpers ------------------------------------------------------------
-
-    @staticmethod
-    def _embed_text(record: dict) -> str:
-        return "\n".join(f"{k}: {v}" for k, v in record.items() if v is not None)
-
 
 def build_incremental_pipeline(
     records: Optional[Sequence[Any]] = None,
@@ -265,6 +275,7 @@ def build_incremental_pipeline(
     vector_database: Optional[VectorDatabase] = None,
     k: int = 20,
     tau: float = DEFAULT_THRESHOLD,
+    embed_text: Optional[Callable[[dict], str]] = None,
 ) -> IncrementalPipeline:
     """Convenience constructor supporting both population modalities.
 
@@ -278,6 +289,10 @@ def build_incremental_pipeline(
       embedder, e.g. one loaded from disk or from a distributed vector DB.
       The records are **not** re-embedded; only queries are embedded at
       ``resolve`` time.
+
+    ``embed_text`` sets the record serializer for embedding (both the ingest
+    when ``records`` is given and the query side); ``None`` uses the store's
+    own serializer, which is what guarantees a consistent text-space.
 
     The scorer is built from ``comparisons`` (declared ``Comparison`` objects)
     unless a calibrated ``scorer`` is given.
@@ -296,7 +311,8 @@ def build_incremental_pipeline(
         if records is None:
             raise ValueError("supply records= or vector_database=")
         embedding = embedder or CharacterHashingEmbedding()
-        database = InMemoryVectorDatabase(embedding, FlatIndex(normalize=True))
+        database = InMemoryVectorDatabase(embedding, FlatIndex(normalize=True),
+                                          embed_text=embed_text)
         database.add(records)
     if scorer is None:
         if not comparisons:
@@ -307,4 +323,5 @@ def build_incremental_pipeline(
         scorer=scorer,
         k=k,
         tau=tau,
+        embed_text=embed_text,
     )
