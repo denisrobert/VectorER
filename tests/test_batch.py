@@ -85,3 +85,43 @@ def test_batch_empty_dataset(base_comparisons):
     result = pipeline.run([])
     assert len(result.records) == 0
     assert result.n_clusters == 0
+
+
+def test_batch_run_from_populated_store(person_duplicate_dataset, base_comparisons):
+    # Pre-populate the store (records + vectors), then run the batch against it:
+    # no re-parsing or re-embedding happens and results match the records path.
+    from vectorer.embeddings import CharacterHashingEmbedding
+    from vectorer.scoring import FellegiSunterScorer
+    from vectorer.vectorstores import FlatIndex, InMemoryVectorDatabase
+
+    embedding = CharacterHashingEmbedding(dimension=96)
+    scorer = FellegiSunterScorer.from_comparisons(base_comparisons)
+    pipeline = BatchPipeline(
+        embedder=embedding, scorer=scorer, n_canopies=3, overlap_m=2, tau=0.85,
+    )
+    records = person_duplicate_dataset
+    store = InMemoryVectorDatabase(embedding, FlatIndex())
+    store.add(records)
+
+    result = pipeline.run(vector_database=store)
+
+    assert result.records == records
+    assert result.timing["parse"] == 0.0
+    assert result.timing["embed"] == 0.0
+    assert result.n_clusters < 15
+    for i in range(5):
+        assert result.cluster_of_position(i) == result.cluster_of_position(i + 5)
+    # Same vectors and canopies as the records path -> same assignments.
+    assert (
+        result.cluster_of_position(0)
+        == pipeline.run(records).cluster_of_position(0)
+    )
+    assert set(result.timing) >= {"canopy", "fellegi_sunter", "swoosh"}
+
+
+def test_batch_run_requires_exactly_one_source(person_duplicate_dataset, base_comparisons):
+    pipeline = build_batch_pipeline(comparisons=base_comparisons)
+    with pytest.raises(ValueError, match="exactly one"):
+        pipeline.run(person_duplicate_dataset, vector_database=object())
+    with pytest.raises(ValueError, match="exactly one"):
+        pipeline.run()

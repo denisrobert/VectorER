@@ -9,6 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Batch pipeline runs against a pre-populated `VectorDatabase`** —
+  `BatchPipeline.run(vector_database=db)` mirrors the link/incremental
+  story: populate the store once (usually incrementally, possibly in another
+  process / on an external service), then cluster with the records and
+  vectors read from the store — no re-parsing or re-embedding.  The
+  `VectorDatabase` interface gained ``vectors()`` (stored embeddings,
+  position-aligned with ``record_at``) implemented by
+  `InMemoryVectorDatabase` (index reconstruct) and
+  `QdrantVectorDatabase` (paginated scroll).  ``records`` and
+  ``vector_database`` are mutually exclusive on ``run``; exact parity with
+  the records path is asserted in the test suite.
+- **`link_directed` external reference store** — `RecordLinker.link_directed`
+  accepts optional ``a_store`` / ``b_store`` (`VectorDatabase`) parameters, so
+  **both** sides can live in external/distributed vector stores and either
+  side may be omitted as record lists — the large-data flow is *populate A,
+  populate B, then link*: fill the stores first (streaming/chunked, nothing
+  fits in memory), then pass only ``a_store=``/``b_store=`` (+ ids).  A is
+  read one record at a time via ``record_at``, queries embed with the stores'
+  own ``embedding``/``embed_text``, and candidates are fetched via
+  ``record_at`` — matching the incremental pipeline's `VectorDatabase`
+  contract ($7.1).  Previously the canonical B side was hard-coded to a
+  rebuilt in-memory `InMemoryVectorDatabase(FlatIndex(...))` (re-embedded and
+  flat-indexed on every call).  An **empty** injected store is populated from
+  its side's records on first use (ids from ``id_column``); a **non-empty**
+  store is trusted as-is, so repeated runs never re-embed, append duplicates
+  at shifted positions, or change ids — pass ``b_records=[]``/``a_records=[]``
+  for clarity in that scenario.
 - **Pluggable record serializers for embedding** — the record → embedding-text
   step is now a single injectable `Callable[[dict], str]` threaded through
   every embed path (store, blocker, pipeline, builders), fixing the previous

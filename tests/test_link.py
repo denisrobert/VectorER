@@ -6,6 +6,7 @@ from vectorer.comparisons import make_comparison
 from vectorer.embeddings import CharacterHashingEmbedding
 from vectorer.link import FieldMap, LinkEdge, LinkTable, RecordLinker
 from vectorer.scoring import FellegiSunterScorer
+from vectorer.vectorstores import FlatIndex, InMemoryVectorDatabase
 
 
 def small_comparisons():
@@ -121,3 +122,83 @@ def test_default_ids_are_positional(linker):
     )
     assert all(isinstance(e.a_id, int) for e in tbl.edges)
     assert all(isinstance(e.b_id, int) for e in tbl.edges) or tbl.n_matches == 0
+
+
+def test_directed_with_injected_store_matches_default(linker):
+    # An injected in-memory store must produce the same edges as the default.
+    tbl_default = linker.link_directed(db_a(), db_b())
+    store = InMemoryVectorDatabase(
+        linker.embedder, FlatIndex(normalize=True), embed_text=linker.embed_text
+    )
+    store.add([linker.project("B", r) for r in db_b()])
+    tbl = linker.link_directed(db_a(), [], b_store=store, b_ids=["p1", "p2", "p3"])
+    assert set(tbl.as_pairs()) == set(tbl_default.as_pairs())
+    assert tbl.n_matches == tbl_default.n_matches
+
+
+def test_directed_prepopulated_store_uses_record_at(linker):
+    # Link against an already-populated store: no b_records are needed and the
+    # candidates must come from the store's own payloads (record_at).
+    store = InMemoryVectorDatabase(
+        linker.embedder, FlatIndex(normalize=True), embed_text=linker.embed_text
+    )
+    store.add([linker.project("B", r) for r in db_b()])
+    tbl = linker.link_directed(db_a(), [], b_store=store, b_ids=["p1", "p2", "p3"])
+    pairs = set(tbl.as_pairs())
+    assert ("c1", "p1") in pairs
+    assert all(b != "p3" for _, b in pairs)
+
+
+def test_directed_populated_store_not_readded(linker):
+    # Passing b_records alongside a populated store must NOT append/re-embed:
+    # the store size stays fixed between runs (the old behavior doubled it).
+    store = InMemoryVectorDatabase(
+        linker.embedder, FlatIndex(normalize=True), embed_text=linker.embed_text
+    )
+    store.add([linker.project("B", r) for r in db_b()])
+    before = len(store)
+    tbl = linker.link_directed(db_a(), db_b(), b_store=store, b_ids=["p1", "p2", "p3"])
+    assert len(store) == before
+    # positions are still the store's original 0..2, so results match the default.
+    assert set(tbl.as_pairs()) == set(linker.link_directed(db_a(), db_b()).as_pairs())
+
+
+def canonical_store(linker, side, records):
+    store = InMemoryVectorDatabase(
+        linker.embedder, FlatIndex(normalize=True), embed_text=linker.embed_text
+    )
+    store.add([linker.project(side, r) for r in records])
+    return store
+
+
+def test_directed_store_to_store_no_record_lists(linker):
+    # The huge-data path: populate A and B stores up front, then link with no
+    # record lists passed in at all.
+    a_store = canonical_store(linker, "A", db_a())
+    b_store = canonical_store(linker, "B", db_b())
+    tbl = linker.link_directed(
+        a_store=a_store, b_store=b_store,
+        a_ids=["c1", "c2", "c3"], b_ids=["p1", "p2", "p3"],
+    )
+    assert set(tbl.as_pairs()) == set(linker.link_directed(db_a(), db_b()).as_pairs())
+
+
+def test_directed_empty_a_store_populated_from_records(linker):
+    # An empty injected A store is populated from a_records on first use, and
+    # ids come from id_column (not positional).
+    a_store = InMemoryVectorDatabase(
+        linker.embedder, FlatIndex(normalize=True), embed_text=linker.embed_text
+    )
+    assert len(a_store) == 0
+    tbl = linker.link_directed(db_a(), db_b(), a_store=a_store)
+    assert len(a_store) == len(db_a())  # populated
+    assert ("c1", "p1") in set(tbl.as_pairs())
+
+
+def test_directed_requires_source_per_side(linker):
+    import pytest
+
+    with pytest.raises(ValueError, match="A side"):
+        linker.link_directed(b_records=db_b())
+    with pytest.raises(ValueError, match="B side"):
+        linker.link_directed(a_records=db_a())

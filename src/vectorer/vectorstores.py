@@ -269,6 +269,16 @@ class VectorDatabase(Generic[T]):
     def record_at(self, position: int) -> T:
         raise NotImplementedError
 
+    def vectors(self) -> list[list[float]]:
+        """All stored vectors, position-aligned with :meth:`record_at`.
+
+        Used by the batch pipeline to run clustering over a pre-populated
+        store without re-embedding.  Vectors are returned **as stored** by the
+        index (L2-normalized for the cosine indexes), which is exactly what
+        the canopy stage normalizes to anyway.
+        """
+        raise NotImplementedError
+
     def records(self) -> list[T]:
         return [self.record_at(i) for i in range(len(self))]
 
@@ -349,6 +359,11 @@ class InMemoryVectorDatabase(VectorDatabase[T]):
 
     def record_at(self, position: int) -> T:
         return self._records[position]
+
+    def vectors(self) -> list[list[float]]:
+        if len(self) == 0:
+            return []
+        return [list(v) for v in self._index.reconstruct(range(len(self)))]
 
     def __len__(self) -> int:
         return len(self._records)

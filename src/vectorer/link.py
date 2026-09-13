@@ -250,9 +250,11 @@ class RecordLinker:
 
     def link_directed(
         self,
-        a_records: Sequence[Mapping[str, Any]],
-        b_records: Sequence[Mapping[str, Any]],
+        a_records: Optional[Sequence[Mapping[str, Any]]] = None,
+        b_records: Optional[Sequence[Mapping[str, Any]]] = None,
         *,
+        a_store: Optional[VectorDatabase] = None,
+        b_store: Optional[VectorDatabase] = None,
         a_ids: Optional[Sequence[Any]] = None,
         b_ids: Optional[Sequence[Any]] = None,
         enforce_11: bool = False,
@@ -263,25 +265,84 @@ class RecordLinker:
         FS scores them; edges at/above ``tau`` are emitted.  With
         ``enforce_11=True`` each B record is used at most once (the best A
         match wins).
-        """
-        if a_ids is None:
-            a_ids = self._ids_of("A", a_records)
-        if b_ids is None:
-            b_ids = self._ids_of("B", b_records)
-        b_canonical = [self.project("B", r) for r in b_records]
 
-        # Index canonicalized B: the stored records are the canonical view so
-        # that embeddings, comparisons and positions all align.
-        b_store = InMemoryVectorDatabase(
-            self.embedder, FlatIndex(normalize=True), embed_text=self.embed_text
-        )
-        b_store.add(b_canonical)
+        Each side is supplied either as **records** (materialized in memory)
+        or as a **store** of canonical records:
+
+        - ``a_records`` / ``b_records``: raw rows in the database's own schema;
+          they are projected to canonical form before embedding.  When the
+          ``b_store``/``a_store`` for that side is omitted, a new in-memory
+          store is built from them (re-embedded and flat-indexed on every
+          call).
+        - ``a_store`` / ``b_store``: a ``VectorDatabase`` (e.g.
+          :class:`~vectorer.vectorstore_adapters.QdrantVectorDatabase`) already
+          holding the **canonical** (projected) records for that side.  This is
+          the large-data path: populate A and B in external/distributed stores
+          first (streaming/chunked, nothing fits in memory), then link with
+          ``a_store=``/``b_store=`` and no record lists.  A is then read one
+          record at a time via ``record_at``, queries embed with the B store's
+          own ``embedding``/``embed_text`` (shared canonical text-space), and
+          candidates are fetched via ``record_at`` — neither dataset is ever
+          materialized in this process.  Provide ``a_ids``/``b_ids`` (or fall
+          back to positional ids ``0..len-1``).
+
+        An **empty** injected store is populated from the side's given records
+        on first use; a **non-empty** store is used as-is — nothing is
+        re-embedded or re-added (a persistent collection reused across runs
+        must not shift positions or duplicate points).
+        """
+        # ---- A side: records or a store of canonical records ---------------
+        # An empty injected store is populated from the side's records; a
+        # non-empty store is trusted as-is.  Ids come from ``id_column`` when
+        # records are supplied (so the populate-once flow keeps real ids),
+        # else positional ``0..len-1`` over the store.
+        if a_records is not None:
+            a_canonical = [self.project("A", r) for r in a_records]
+            if a_store is not None and len(a_store) == 0 and a_canonical:
+                a_store.add(a_canonical)
+        if a_ids is None:
+            if a_records is not None:
+                a_ids = self._ids_of("A", a_records)
+            elif a_store is not None:
+                a_ids = list(range(len(a_store)))
+            else:
+                raise ValueError("supply a_records or a_store for the A side")
+
+        # ---- B side: records or a store of canonical records ---------------
+        b_canonical: list[dict] = []
+        if b_records is not None:
+            b_canonical = [self.project("B", r) for r in b_records]
+            if b_store is not None and len(b_store) == 0 and b_canonical:
+                b_store.add(b_canonical)
+        if b_ids is None:
+            if b_records is not None:
+                b_ids = self._ids_of("B", b_records)
+            elif b_store is not None:
+                b_ids = list(range(len(b_store)))
+            else:
+                raise ValueError("supply b_records or b_store for the B side")
+        if b_store is None:
+            b_store = InMemoryVectorDatabase(
+                self.embedder, FlatIndex(normalize=True), embed_text=self.embed_text
+            )
+            if b_canonical:
+                b_store.add(b_canonical)
+
+        if a_store is not None:
+            a_source = (
+                (a_ids[pos], a_store.record_at(pos))
+                for pos in range(len(a_store))
+            )
+        else:
+            a_source = (
+                (a_ids[i], self.project("A", rec))
+                for i, rec in enumerate(a_records)  # type: ignore[arg-type]
+            )
 
         edges: list[LinkEdge] = []
         used_b: set[int] = set()  # index positions, not b_ids
-        for a_i, a_rec in enumerate(a_records):
-            canonical_a = self.project("A", a_rec)
-            query = self.embedder.embed(self.embed_text(canonical_a))
+        for a_id, canonical_a in a_source:
+            query = b_store.embedding.embed(b_store.embed_text(canonical_a))
             indices, scores = b_store.index.search(query, min(self.k, len(b_store)))
             best_b_pos = -1
             best_prob = 0.0
@@ -292,14 +353,15 @@ class RecordLinker:
                     continue
                 if enforce_11 and b_pos in used_b:
                     continue
-                prob = self.scorer.score(canonical_a, b_canonical[b_pos])
+                canonical_b = b_store.record_at(b_pos)
+                prob = self.scorer.score(canonical_a, canonical_b)
                 if prob >= self.tau:
                     weight = float(self.scorer.match_weight_batch(
-                        canonical_a, [b_canonical[b_pos]]
+                        canonical_a, [canonical_b]
                     )[0])
                     decision = self.classifier.decide(float(prob))
                     edges.append(LinkEdge(
-                        a_id=a_ids[a_i],
+                        a_id=a_id,
                         b_id=b_ids[b_pos],
                         probability=float(prob),
                         match_weight=weight,

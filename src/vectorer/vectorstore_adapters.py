@@ -207,6 +207,29 @@ class QdrantVectorDatabase(VectorDatabase[dict]):
             raise IndexError(f"no record at position {position}")
         return dict(res[0].payload.get("record", {}))
 
+    def vectors(self) -> list[list[float]]:
+        """Scroll all stored vectors (position-aligned with ``record_at``)."""
+        out: list[list[float]] = []
+        offset: Any = None
+        while True:
+            res = self._client.scroll(
+                collection_name=self._collection,
+                offset=offset,
+                limit=256,
+                with_vectors=True,
+                with_payload=False,
+            )
+            batch = getattr(res, "points", None) or res
+            if not batch:
+                break
+            for point in batch:
+                vector = getattr(point, "vector", None)
+                out.append(list(vector) if vector is not None else [])
+            offset = getattr(res, "next_page_offset", None)
+            if offset is None:
+                break
+        return out
+
     def _search(self, query: Any, k: int) -> tuple[list[int], list[float]]:
         # Qdrant >= 1.15 uses query_points; older clients use search.
         # Request the payloads in the same call so resolve's per-candidate

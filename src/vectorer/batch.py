@@ -24,6 +24,7 @@ from .clustering import ClusterAssignment, ScoredPair, SwooshClusterer
 from .embeddings import EmbeddingModel
 from .records import EMBED_DEFAULT, RecordSchema, to_record_dict
 from .scoring import DEFAULT_THRESHOLD, FellegiSunterScorer
+from .vectorstores import VectorDatabase
 
 
 class _NullProgressBar:
@@ -214,28 +215,50 @@ class BatchPipeline:
 
     def run(
         self,
-        records: Sequence[Any],
+        records: Optional[Sequence[Any]] = None,
         schema: Optional[RecordSchema] = None,
+        *,
+        vector_database: Optional[VectorDatabase] = None,
     ) -> BatchResult:
         """Cluster the whole dataset: parse -> embed -> canopy -> FS -> Swoosh.
+
+        Supply **exactly one** data source:
+
+        - ``records``: parsed and embedded here (the record-mapping form).
+        - ``vector_database``: a **pre-populated** :class:`~vectorer.vectorstores.VectorDatabase`
+          (e.g. an :class:`InMemoryVectorDatabase` checkpoint or an external
+          store such as ``QdrantVectorDatabase``).  Records and vectors are
+          read from the store — nothing is re-parsed, re-embedded, or
+          re-ingested, so a store populated once (possibly incrementally, by
+          another process) can drive repeated batch runs.
 
         When the optional ``tqdm`` package is importable, a per-stage progress
         bar is shown (parse, embed, canopy, FS scoring, Swoosh).  Otherwise the
         run is silent -- behaviour identical.
         """
         del schema  # reserved for id reporting
+        if (records is None) == (vector_database is None):
+            raise ValueError("supply exactly one of records or vector_database")
         bar = _stage_progress_bar()
 
         timing: dict[str, float] = {}
-        t0 = perf_counter()
-        parsed = [to_record_dict(r) for r in records]
-        timing["parse"] = perf_counter() - t0
-        bar.update(1)
+        if vector_database is not None:
+            # Pre-populated store: parse/embed already happened at ingest time.
+            parsed = vector_database.records()
+            vectors = vector_database.vectors()
+            timing["parse"] = 0.0
+            timing["embed"] = 0.0
+            bar.update(2)
+        else:
+            t0 = perf_counter()
+            parsed = [to_record_dict(r) for r in records]  # type: ignore[union-type]
+            timing["parse"] = perf_counter() - t0
+            bar.update(1)
 
-        t0 = perf_counter()
-        vectors = self.embed_all(parsed)
-        timing["embed"] = perf_counter() - t0
-        bar.update(1)
+            t0 = perf_counter()
+            vectors = self.embed_all(parsed)
+            timing["embed"] = perf_counter() - t0
+            bar.update(1)
 
         t0 = perf_counter()
         canopy = self.block(vectors)
