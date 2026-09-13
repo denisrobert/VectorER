@@ -168,6 +168,12 @@ def _default_embed_text(canonical_record: dict) -> str:
 class RecordLinker:
     """Links records across two databases along matching entities.
 
+    The two database sides are called **A** and **B**: **A** is the
+    source/query side and **B** is the target/reference side.  In directed
+    mode (:meth:`link_directed`) B is indexed and each A record is resolved
+    against it; in symmetric mode (:meth:`link_symmetric`) both sides are
+    canopied together and only cross-DB (A-B) pairs are scored.
+
     Parameters
     ----------
     embedder:
@@ -178,7 +184,8 @@ class RecordLinker:
         names) via ``make_comparison`` / ``Comparison`` objects.
     field_maps:
         ``{"A": FieldMap(...), "B": FieldMap(...)}`` -- per-database column ->
-        canonical-field projection.
+        canonical-field projection, keyed by the two sides **A** and **B**
+        defined above.
     k:
         Top-k ANN blocking (directed mode).
     tau:

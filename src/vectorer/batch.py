@@ -22,7 +22,7 @@ from typing import Any, Callable, Optional, Sequence
 from .blocking import CanopyIndex, canopy_blocking
 from .clustering import ClusterAssignment, ScoredPair, SwooshClusterer
 from .embeddings import EmbeddingModel
-from .records import RecordSchema, to_record_dict
+from .records import EMBED_DEFAULT, RecordSchema, to_record_dict
 from .scoring import DEFAULT_THRESHOLD, FellegiSunterScorer
 
 
@@ -144,9 +144,7 @@ class BatchPipeline:
         self.overlap_m = int(max(1, overlap_m))
         self.canopy_seed = int(canopy_seed)
         self.tau = float(tau) if tau is not None else scorer.threshold
-        self._embed_text = embed_text if embed_text is not None else (
-            lambda r: "\n".join(f"{k}: {v}" for k, v in r.items() if v is not None)
-        )
+        self._embed_text = embed_text if embed_text is not None else EMBED_DEFAULT
         from .clustering import select_representative
 
         self.merge = merge if merge is not None else select_representative
