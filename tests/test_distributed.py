@@ -18,7 +18,11 @@ from vectorer.distributed import (
     streaming_distributed_closure,
 )
 from vectorer.distributed._canopy import _serialize
-from vectorer.embeddings import CharacterHashingEmbedding
+from vectorer.embeddings import (
+    CharacterHashingEmbedding,
+    SentenceTransformerEmbedding,
+    embedder_from_settings,
+)
 from vectorer.scoring import FellegiSunterScorer
 from vectorer.vectorstores import FlatIndex, InMemoryVectorDatabase
 
@@ -181,6 +185,99 @@ def test_store_vectors_for_and_records_at(dataset):
     assert store.vectors_for(4, 4) == []
     assert store.records_at([0, 2, n - 1]) == [dataset[0], dataset[2], dataset[n - 1]]
     assert store.records_at([]) == []
+
+
+def test_distributed_records_honors_explicit_embedder(dataset, scorer):
+    # A non-default embedder must drive the records path: the distributed run
+    # embeds with it (per-worker rebuild via to_settings) and matches the
+    # single-process pipeline using the same model.
+    from vectorer.batch import BatchPipeline
+    from vectorer.distributed._canopy import _embed_shard
+
+    embedder = CharacterHashingEmbedding(dimension=96, ngrams=(1, 2))
+    single = BatchPipeline(
+        embedder=embedder, scorer=scorer, n_canopies=3, overlap_m=2,
+        canopy_seed=42, tau=0.85,
+    ).run(dataset).assignment
+    custom = distributed_batch_er(
+        dataset, embedder=embedder, scorer=scorer, n_canopies=3, overlap_m=2,
+        tau=0.85, n_workers=2, use_threads=True,
+    )
+    assert custom.node_cluster == single.node_cluster
+
+    # The embedder state drives the shard embedding (deterministic proof, since
+    # the final clustering can coincide across embedders on tiny data).
+    _, custom_vecs = _embed_shard(dataset, embedder.to_settings())
+    _, default_vecs = _embed_shard(
+        dataset, CharacterHashingEmbedding(dimension=384).to_settings()
+    )
+    assert not np.array_equal(custom_vecs, default_vecs)
+    expected = np.asarray(
+        BatchPipeline(
+            embedder=embedder, scorer=scorer, n_canopies=3, overlap_m=2,
+            canopy_seed=42, tau=0.85,
+        ).embed_all(dataset),
+        dtype="float32",
+    )
+    assert np.array_equal(custom_vecs, expected)
+
+
+def test_embedder_settings_roundtrip():
+    embedder = CharacterHashingEmbedding(dimension=64, ngrams=(1, 3))
+    rebuilt = embedder_from_settings(embedder.to_settings())
+    assert rebuilt.dimension == 64
+    assert rebuilt.ngrams == (1, 3)
+    assert rebuilt.embed("hello world") == embedder.embed("hello world")
+    with pytest.raises(ValueError, match="unknown embedding model settings"):
+        embedder_from_settings({"type": "nope"})
+
+
+def test_sentence_transformer_settings_carry_backend():
+    import sentence_transformers as st_mod
+    from unittest import mock
+
+    captured = {}
+
+    class _FakeST:
+        def __init__(self, *args, **kwargs):
+            captured["args"] = args
+            captured["kwargs"] = kwargs
+
+        def get_sentence_embedding_dimension(self):
+            return 8
+
+    with mock.patch.object(st_mod, "SentenceTransformer", _FakeST):
+        embedder = SentenceTransformerEmbedding(
+            model_id="my/model", device="cpu", backend="onnx"
+        )
+    assert embedder.backend == "onnx"
+    assert captured["kwargs"] == {
+        "revision": None, "device": "cpu", "backend": "onnx",
+    }
+
+    settings = embedder.to_settings()
+    assert settings["backend"] == "onnx"
+    with mock.patch.object(st_mod, "SentenceTransformer", _FakeST):
+        rebuilt = embedder_from_settings(settings)
+    assert rebuilt.backend == "onnx"
+    assert captured["kwargs"]["backend"] == "onnx"
+
+
+def test_distributed_wrapped_embedder_rejected(dataset, scorer):
+    # A pre-loaded model object cannot be re-instantiated per worker; the
+    # caller must pass model_id/device so workers can re-load it.
+    class _StubModel:
+        def encode(self, texts):
+            return [[0.0] * 4 for _ in texts]
+
+        def get_sentence_embedding_dimension(self):
+            return 4
+
+    embedder = SentenceTransformerEmbedding(model=_StubModel())
+    with pytest.raises(ValueError, match="pre-loaded"):
+        distributed_batch_er(
+            dataset, embedder=embedder, scorer=scorer, n_canopies=3, tau=0.85,
+        )
 
 
 def test_hash_pair_is_deterministic():

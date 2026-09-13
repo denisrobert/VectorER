@@ -16,17 +16,33 @@ from ..blocking import assign_canopies
 from ..records import to_record_dict
 
 
-def _embed_shard(records, embed_dim: int, embed_seed: int) -> tuple[list[dict], np.ndarray]:
-    """Parse + embed a shard using the deterministic hashing embedder, which
-    round-trips workers without shipping a model object."""
-    from ..embeddings import CharacterHashingEmbedding
+def _embed_shard(records, embedder_state: dict) -> tuple[list[dict], np.ndarray]:
+    """Parse + embed a shard with the model rebuilt from its settings.
 
-    embedder = CharacterHashingEmbedding(dimension=embed_dim, ngrams=(2, 3))
-    del embed_seed
+    The embedder is reconstructed per worker from plain settings (no model
+    object is shipped), so a heavy model -- e.g. a sentence-transformer on a
+    GPU -- is loaded once per worker, which is the expected cost in a large
+    distributed run.
+    """
+    from ..embeddings import embedder_from_settings
+
+    embedder = embedder_from_settings(embedder_state)
     parsed = [to_record_dict(r) for r in records]
     texts = [_serialize(r) for r in parsed]
     vecs = np.asarray(embedder.embed_many(texts), dtype="float32")
     return parsed, vecs
+
+
+def _embedder_state_of(embedder) -> dict:
+    """Serializable settings for an embedding model, for per-worker rebuilds."""
+    to_settings = getattr(embedder, "to_settings", None)
+    if to_settings is None:
+        raise ValueError(
+            "distributed_batch_er requires an EmbeddingModel that implements "
+            "to_settings() so workers can rebuild it; got "
+            f"{type(embedder).__name__}"
+        )
+    return to_settings()
 
 
 def _serialize(record: dict) -> str:

@@ -16,9 +16,10 @@ import numpy as np
 
 from ..blocking import train_canopy_centroids
 from ..clustering import ClusterAssignment
+from ..embeddings import CharacterHashingEmbedding, EmbeddingModel
 from ..scoring import FellegiSunterScorer
 from ..vectorstores import VectorDatabase
-from ._canopy import _assign_shard, _embed_shard, gather_canopy_sample
+from ._canopy import _assign_shard, _embed_shard, _embedder_state_of, gather_canopy_sample
 from ._closure import distributed_closure_reduce
 from ._core import hash_pair
 from ._scoring import _score_owned_pairs, _scorer_state_of
@@ -35,6 +36,7 @@ def distributed_batch_er(
     seed: int = 42,
     n_workers: int = 2,
     embed_dim: int = 384,
+    embedder: Optional[EmbeddingModel] = None,
     sample_size: Optional[int] = 200_000,
     use_threads: bool = False,
     executor: Optional[Any] = None,
@@ -45,7 +47,7 @@ def distributed_batch_er(
     Supply **exactly one** data source:
 
     * ``records``: the dataset as a record list; parsed and embedded on the
-      driver, then distributed (the classic form).
+      driver's shards, then distributed (the classic form).
     * ``vector_database``: a **pre-populated** :class:`VectorDatabase` (e.g. a
       checkpointed :class:`InMemoryVectorDatabase` or an external
       ``QdrantVectorDatabase``).  The stages then read the store in bounded
@@ -61,9 +63,13 @@ def distributed_batch_er(
 
     Notes
     -----
-    * The deterministic :class:`~vectorer.embeddings.CharacterHashingEmbedding`
-      is used for the embedding stage (identical to the pipeline default), so
-      results match ``build_batch_pipeline(embedder=...)``.
+    * ``embedder`` selects the embedding model used by the records form.
+      Default (and ``embed_dim``'s effective value) is the deterministic
+      :class:`~vectorer.embeddings.CharacterHashingEmbedding`, matching the
+      pipeline default.  The embedder must implement
+      :meth:`EmbeddingModel.to_settings`; workers rebuild it from those
+      settings, so a heavy model (sentence-transformer, GPU) is **loaded once
+      per worker** -- the expected cost in a distributed run.
     * ``scorer`` is serialized to each worker via its settings -- the same
       m/u, prior and threshold as single-process.
     * The closure over the above-tau edges is the exact distributed union-find,
@@ -79,10 +85,12 @@ def distributed_batch_er(
             use_threads=use_threads, executor=executor,
             progress_callback=progress_callback,
         )
+    embedder = embedder if embedder is not None else CharacterHashingEmbedding(dimension=embed_dim)
     return _distributed_batch_er_from_records(
         records,  # type: ignore[arg-type]
+        embedder_state=_embedder_state_of(embedder),
         scorer=scorer, n_canopies=n_canopies, overlap_m=overlap_m, tau=tau,
-        seed=seed, n_workers=n_workers, embed_dim=embed_dim,
+        seed=seed, n_workers=n_workers,
         sample_size=sample_size, use_threads=use_threads, executor=executor,
         progress_callback=progress_callback,
     )
@@ -91,13 +99,13 @@ def distributed_batch_er(
 def _distributed_batch_er_from_records(
     records: Sequence[Any],
     *,
+    embedder_state: dict,
     scorer: FellegiSunterScorer,
     n_canopies: int,
     overlap_m: int = 2,
     tau: float = 0.85,
     seed: int = 42,
     n_workers: int = 2,
-    embed_dim: int = 384,
     sample_size: Optional[int] = 200_000,
     use_threads: bool = False,
     executor: Optional[Any] = None,
@@ -112,9 +120,10 @@ def _distributed_batch_er_from_records(
 
     Notes
     -----
-    * The deterministic :class:`~vectorer.embeddings.CharacterHashingEmbedding`
-      is used for the embedding stage (identical to the pipeline default), so
-      results match ``build_batch_pipeline(embedder=...)``.
+    * ``embedder_state`` is the serialized embedding model (see
+      :meth:`EmbeddingModel.to_settings`); each worker rebuilds the model from
+      these settings, so results match ``build_batch_pipeline(embedder=...)``
+      embedding with the same model.
     * ``scorer`` is serialized to each worker via its settings -- the same
       m/u, prior and threshold as single-process.
     * The closure over the above-tau edges is the exact distributed union-find,
@@ -132,16 +141,16 @@ def _distributed_batch_er_from_records(
     bases = boundaries[:-1]
 
     # --- stage 1: parse + embed (map) -------------------------------------
-    # Embedding via CharacterHashingEmbedding is pure numpy (releases the GIL),
-    # so a thread pool is safe and identical to serial.  Only the FS scoring
-    # stage (below) uses processes/threads as configured.
+    # Embedding is pure numpy / a GPU model in its own worker; the thread pool
+    # is safe because CharacterHashingEmbedding releases the GIL and heavier
+    # models embed independently per worker.
     def _run_embed():
         if executor is not None:
             return list(executor.map(
-                lambda shard: _embed_shard(shard, embed_dim, seed), shards))
+                lambda shard: _embed_shard(shard, embedder_state), shards))
         with ThreadPoolExecutor(max_workers=n_workers) as ex:
             return list(ex.map(
-                lambda shard: _embed_shard(shard, embed_dim, seed), shards))
+                lambda shard: _embed_shard(shard, embedder_state), shards))
 
     shard_data = _run_embed()
     parsed_shards = [d[0] for d in shard_data]

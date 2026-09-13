@@ -53,6 +53,19 @@ class EmbeddingModel:
     def embed_many(self, texts: Sequence[str]) -> list[Vector]:
         raise NotImplementedError
 
+    def to_settings(self) -> dict:
+        """Serializable constructor settings for per-worker re-instantiation.
+
+        Distributed batch ER rebuilds the embedding model inside each worker
+        (a heavy model is loaded once per worker, e.g. onto a GPU), so
+        concrete models must be reconstructible from plain constructor
+        settings via :func:`embedder_from_settings`.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement to_settings(); it cannot "
+            "be re-instantiated in distributed workers"
+        )
+
     def __repr__(self) -> str:
         return f"{type(self).__name__}(dimension={self.dimension})"
 
@@ -71,6 +84,12 @@ class SentenceTransformerEmbedding(EmbeddingModel):
         runs.  ``None`` uses the hub default revision.
     device:
         Torch device string (``"cpu"``, ``"cuda"``, ...).
+    backend:
+        Compute backend passed through to ``SentenceTransformer``
+        (``"torch"``, ``"onnx"``, ``"openvino"``, ...) when supported by the
+        installed sentence-transformers; ``None`` uses its default.  Kept in
+        :meth:`to_settings` so distributed workers re-load the model with the
+        same backend (e.g. ONNX/OpenVINO servers on plain CPUs).
     model:
         A **preconfigured** embedding model instead of loading one from
         ``model_id``/``revision``/``device``.  Any object with an ``encode``
@@ -89,6 +108,7 @@ class SentenceTransformerEmbedding(EmbeddingModel):
         model_id: str = "sentence-transformers/all-MiniLM-L6-v2",
         revision: Optional[str] = None,
         device: Optional[str] = None,
+        backend: Optional[str] = None,
         model: Optional[Any] = None,
     ) -> None:
         if model is not None:
@@ -98,10 +118,17 @@ class SentenceTransformerEmbedding(EmbeddingModel):
         else:
             from sentence_transformers import SentenceTransformer
 
-            kwargs = {"device": device} if device else {}
+            kwargs: dict[str, Any] = {}
+            if device is not None:
+                kwargs["device"] = device
+            if backend is not None:
+                kwargs["backend"] = backend
             self._model = SentenceTransformer(model_id, revision=revision, **kwargs)
             self.model_id = model_id
             self.revision = revision
+        self.device = device
+        self.backend = backend
+        self._wrapped = model is not None
         get_dim = getattr(self._model, "get_sentence_embedding_dimension", None)
         if get_dim is None:
             get_dim = getattr(self._model, "get_embedding_dimension", None)
@@ -109,6 +136,22 @@ class SentenceTransformerEmbedding(EmbeddingModel):
             self.dimension = int(get_dim()) if get_dim is not None else None
         except Exception:
             self.dimension = None
+
+    def to_settings(self) -> dict:
+        if self._wrapped:
+            raise ValueError(
+                "SentenceTransformerEmbedding was given a pre-loaded model object "
+                "and cannot be re-instantiated in workers; load it from "
+                "model_id/device/backend (e.g. model_id='sentence-transformers/"
+                "all-MiniLM-L6-v2', device='cuda') so each worker can rebuild it"
+            )
+        return {
+            "type": "sentence_transformer",
+            "model_id": self.model_id,
+            "revision": self.revision,
+            "device": self.device,
+            "backend": self.backend,
+        }
 
     def embed(self, text: str) -> Vector:
         return [float(x) for x in self._model.encode([text])[0]]
@@ -183,6 +226,17 @@ class OpenAIEmbedding(EmbeddingModel):
         # Probe the response model to discover the embedding dimension.
         sample = self._call_api(["probe"])
         self.dimension = len(sample[0]["embedding"])
+
+    def to_settings(self) -> dict:
+        return {
+            "type": "openai",
+            "api_key": self._key,
+            "model": self.model,
+            "dimensions": self.dimensions,
+            "base_url": self.base_url,
+            "batch_size": self.batch_size,
+            "timeout": self.timeout,
+        }
 
     # -- API ---------------------------------------------------------------
 
@@ -299,6 +353,13 @@ class CharacterHashingEmbedding(EmbeddingModel):
         self.dimension = int(dimension)
         self.ngrams = tuple(int(n) for n in ngrams)
 
+    def to_settings(self) -> dict:
+        return {
+            "type": "character_hashing",
+            "dimension": self.dimension,
+            "ngrams": list(self.ngrams),
+        }
+
     def _digest(self, text: str) -> np.ndarray:
         vector = np.zeros(self.dimension, dtype="float64")
         lowered = text.lower()
@@ -322,3 +383,33 @@ class CharacterHashingEmbedding(EmbeddingModel):
 
     def embed_many(self, texts: Sequence[str]) -> list[Vector]:
         return [self._digest(text).tolist() for text in texts]
+
+
+def embedder_from_settings(state: dict) -> EmbeddingModel:
+    """Rebuild an :class:`EmbeddingModel` from :meth:`EmbeddingModel.to_settings`.
+
+    Used by the distributed executors so every worker can re-load the model
+    (e.g. a sentence-transformer onto a GPU) without shipping a model object.
+    """
+    kind = state.get("type")
+    if kind == "character_hashing":
+        return CharacterHashingEmbedding(
+            dimension=state["dimension"], ngrams=tuple(state["ngrams"])
+        )
+    if kind == "sentence_transformer":
+        return SentenceTransformerEmbedding(
+            model_id=state["model_id"],
+            revision=state.get("revision"),
+            device=state.get("device"),
+            backend=state.get("backend"),
+        )
+    if kind == "openai":
+        return OpenAIEmbedding(
+            api_key=state.get("api_key"),
+            model=state["model"],
+            dimensions=state.get("dimensions"),
+            base_url=state.get("base_url"),
+            batch_size=state.get("batch_size", _OPENAI_BATCH_SIZE),
+            timeout=state.get("timeout", 60.0),
+        )
+    raise ValueError(f"unknown embedding model settings: {state!r}")

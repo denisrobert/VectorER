@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`EmbeddingModel.to_settings()` / `embedder_from_settings()`** — the
+  embedding interface gained serializable constructor settings (mirroring the
+  scorer's `to_settings`), and `distributed_batch_er(records, embedder=...)`
+  now accepts any model that implements it.  Each worker **re-builds the
+  model** from those settings, so a heavy model (e.g. a sentence-transformer
+  onto a GPU) is loaded once per worker -- the expected cost in a distributed
+  run -- instead of silently using `CharacterHashingEmbedding` regardless of
+  the system's embedder.  `SentenceTransformerEmbedding` gained a ``backend``
+  parameter (relayed to ``SentenceTransformer`` -- torch/onnx/openvino) which
+  is carried in ``to_settings`` so workers re-load with the same compute
+  backend.  Default remains the deterministic hashing embedder (backward
+  compatible), and a pre-loaded wrapped sentence-transformer model (which
+  cannot be re-instantiated per worker) raises `ValueError` asking for
+  `model_id`/`device` instead.
 - **Distributed batch from a pre-populated `VectorDatabase`** —
   `distributed_batch_er(vector_database=db)` realizes the §7.2/§7.3 promise
   that batch dedup can process datasets too large for a single node: records
