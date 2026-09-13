@@ -279,6 +279,24 @@ class VectorDatabase(Generic[T]):
         """
         raise NotImplementedError
 
+    def vectors_for(self, start: int, stop: int) -> list[list[float]]:
+        """Stored vectors at positions ``start..stop-1`` (position-aligned).
+
+        A bounded shard pull used by the distributed batch pipeline so a
+        driver never materializes the whole store's vectors in memory: each
+        shard fetches only its range.
+        """
+        raise NotImplementedError
+
+    def records_at(self, positions: Sequence[int]) -> list[T]:
+        """Fetch the stored records at ``positions`` in one batched call.
+
+        Used by the distributed batch pipeline so a worker receives only the
+        record payloads it needs to score its owned pairs instead of the whole
+        dataset.
+        """
+        raise NotImplementedError
+
     def records(self) -> list[T]:
         return [self.record_at(i) for i in range(len(self))]
 
@@ -364,6 +382,14 @@ class InMemoryVectorDatabase(VectorDatabase[T]):
         if len(self) == 0:
             return []
         return [list(v) for v in self._index.reconstruct(range(len(self)))]
+
+    def vectors_for(self, start: int, stop: int) -> list[list[float]]:
+        if start >= stop:
+            return []
+        return [list(v) for v in self._index.reconstruct(range(int(start), int(stop)))]
+
+    def records_at(self, positions: Sequence[int]) -> list[T]:
+        return [self._records[int(p)] for p in positions]
 
     def __len__(self) -> int:
         return len(self._records)

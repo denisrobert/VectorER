@@ -67,6 +67,7 @@ from .blocking import assign_canopies, train_canopy_centroids
 from .clustering import Cluster, ClusterAssignment, ScoredPair, _DisjointSet, _build
 from .records import to_record_dict
 from .scoring import FellegiSunterScorer
+from .vectorstores import VectorDatabase
 
 
 def hash_pair(i: int, j: int, n_workers: int) -> int:
@@ -137,6 +138,33 @@ def _score_worker(worker, pairs, all_records, scorer_state, tau, progress_queue=
             ScoredPair(left_position=p[0], right_position=p[1],
                        probability=prob, match_weight=weight)
             for p, prob, weight, keep in zip(pairs_chunk, probs, weights, mask)
+            if keep
+        )
+    return out
+
+
+def _score_owned_pairs_worker(pairs, left_records, right_records, scorer_state, tau,
+                              progress_queue=None, chunk_size: int = 4096):
+    """Module-level worker: score ``pairs`` whose record payloads are given as
+    position-aligned ``left_records``/``right_records`` lists.
+
+    Used by the store-fed distributed path, where a worker receives only the
+    records of the pairs it owns instead of a copy of the whole dataset.
+    Returns the above-``tau`` :class:`ScoredPair` edges with global positions.
+    """
+    out = []
+    for start in range(0, len(pairs), chunk_size):
+        end = start + chunk_size
+        chunk = pairs[start:end]
+        mask, probs, weights = _score_shard(
+            left_records[start:end], right_records[start:end], scorer_state, tau
+        )
+        if progress_queue is not None:
+            progress_queue.put(len(chunk))
+        out.extend(
+            ScoredPair(left_position=p[0], right_position=p[1],
+                       probability=prob, match_weight=weight)
+            for p, prob, weight, keep in zip(chunk, probs, weights, mask)
             if keep
         )
     return out
@@ -500,6 +528,70 @@ def gather_canopy_sample(
 
 
 def distributed_batch_er(
+    records: Optional[Sequence[Any]] = None,
+    vector_database: Optional[VectorDatabase] = None,
+    *,
+    scorer: FellegiSunterScorer,
+    n_canopies: int,
+    overlap_m: int = 2,
+    tau: float = 0.85,
+    seed: int = 42,
+    n_workers: int = 2,
+    embed_dim: int = 384,
+    sample_size: Optional[int] = 200_000,
+    use_threads: bool = False,
+    executor: Optional[Any] = None,
+    progress_callback: Optional[Callable[[int], None]] = None,
+) -> ClusterAssignment:
+    """Run the batch ER stages in parallel and return the cluster assignment.
+
+    Supply **exactly one** data source:
+
+    * ``records``: the dataset as a record list; parsed and embedded on the
+      driver, then distributed (the classic form).
+    * ``vector_database``: a **pre-populated** :class:`VectorDatabase` (e.g. a
+      checkpointed :class:`InMemoryVectorDatabase` or an external
+      ``QdrantVectorDatabase``).  The stages then read the store in bounded
+      pulls -- one shard's vectors at a time for canopy training/assignment,
+      and only the record payloads each worker owns for FS scoring -- so a
+      dataset that does **not fit on a single node** can be deduplicated as
+      long as it fits in the cluster.  See
+      :func:`_distributed_batch_er_from_store`.
+
+    ``executor`` may be a ``concurrent.futures`` executor; otherwise a
+    :class:`ProcessPoolExecutor` (or :class:`ThreadPoolExecutor` when
+    ``use_threads``) with ``n_workers`` is created.
+
+    Notes
+    -----
+    * The deterministic :class:`~vectorer.embeddings.CharacterHashingEmbedding`
+      is used for the embedding stage (identical to the pipeline default), so
+      results match ``build_batch_pipeline(embedder=...)``.
+    * ``scorer`` is serialized to each worker via its settings -- the same
+      m/u, prior and threshold as single-process.
+    * The closure over the above-tau edges is the exact distributed union-find,
+      equivalent to the single-process transitive closure.
+    """
+    if (records is None) == (vector_database is None):
+        raise ValueError("supply exactly one of records or vector_database")
+    if vector_database is not None:
+        return _distributed_batch_er_from_store(
+            vector_database,
+            scorer=scorer, n_canopies=n_canopies, overlap_m=overlap_m, tau=tau,
+            seed=seed, n_workers=n_workers, sample_size=sample_size,
+            use_threads=use_threads, executor=executor,
+            progress_callback=progress_callback,
+        )
+    return _distributed_batch_er_from_records(
+        records,  # type: ignore[arg-type]
+        scorer=scorer, n_canopies=n_canopies, overlap_m=overlap_m, tau=tau,
+        seed=seed, n_workers=n_workers, embed_dim=embed_dim,
+        sample_size=sample_size, use_threads=use_threads, executor=executor,
+        progress_callback=progress_callback,
+    )
+
+
+def _distributed_batch_er_from_records(
     records: Sequence[Any],
     *,
     scorer: FellegiSunterScorer,
@@ -688,6 +780,191 @@ def distributed_batch_er(
     # merge is exact/multi-machine.  With n_workers == 1 this degenerates to
     # the single union-find.
     return distributed_closure_reduce(edges, n, n_workers=n_workers, executor=executor)
+
+
+def _distributed_batch_er_from_store(
+    vector_database: VectorDatabase,
+    *,
+    scorer: FellegiSunterScorer,
+    n_canopies: int,
+    overlap_m: int = 2,
+    tau: float = 0.85,
+    seed: int = 42,
+    n_workers: int = 2,
+    sample_size: Optional[int] = 200_000,
+    use_threads: bool = False,
+    executor: Optional[Any] = None,
+    progress_callback: Optional[Callable[[int], None]] = None,
+) -> ClusterAssignment:
+    """Store-fed distributed batch ER (populate-then-cluster on huge data).
+
+    Records and vectors live in ``vector_database`` (cluster-resident for an
+    external store); only bounded pieces are ever pulled:
+
+    * one shard's vectors at a time -- for canopy centroid training via a
+      cross-shard SAMPLE (never the full matrix, so a dataset that does not
+      fit on one node can be clustered) and for that shard's canopy
+      assignment;
+    * only the record payloads a worker needs to score its owned pairs
+      (batched ``records_at`` fetches), not a copy of the dataset;
+    * representatives for the output clusters, one ``record_at`` per cluster.
+
+    The scoring map and the exact distributed closure are the same as the
+    records path, and given the same store contents the cluster assignment is
+    identical (the canopy geometry and the edge stream agree).
+    """
+    n = len(vector_database)
+    if n == 0:
+        return ClusterAssignment(
+            node_cluster={}, clusters={}, n_pairs_evaluated=0, n_pairs_matched=0
+        )
+
+    boundaries = [n * w // n_workers for w in range(n_workers + 1)]
+    bases = boundaries[:-1]
+
+    def shard_vectors(w: int) -> np.ndarray:
+        start, stop = boundaries[w], boundaries[w + 1]
+        return np.asarray(vector_database.vectors_for(start, stop), dtype="float32")
+
+    # --- stage 2: canopy centroid training on a cross-shard SAMPLE --------
+    if sample_size is not None and n > int(sample_size):
+        # Mirror gather_canopy_sample's deterministic per-shard sampling, done
+        # one shard at a time so the driver never holds the full matrix.
+        rng = np.random.default_rng(seed)
+        per_shard = int(sample_size) // max(1, n_workers)
+        slices = []
+        for w in range(n_workers):
+            v = shard_vectors(w)
+            take = max(1, min(per_shard, len(v)))
+            idx = rng.choice(len(v), take, replace=False)
+            slices.append(np.asarray(v)[idx])
+        train_vectors = np.vstack(slices)
+    else:
+        # Small data (or an explicit full-materialization request): train on
+        # the whole matrix, bit-identical to the records path.
+        shards = [shard_vectors(w) for w in range(n_workers)]
+        train_vectors = np.vstack(shards) if shards else np.zeros((0, 0))
+    centroids = train_canopy_centroids(train_vectors, n_canopies, seed=seed, sample_size=None)
+    del train_vectors
+
+    # --- stage 3: per-shard canopy assignment (bounded), emit + hash-own ----
+    centroid_to_ids: dict[int, set[int]] = {}
+    for w in range(n_workers):
+        v = shard_vectors(w)
+        canopy = _assign_shard(v, centroids, overlap_m)
+        assignments = canopy.assignments  # (shard_local_n, overlap_m) of centroids
+        offset = bases[w]
+        for local_i, row in enumerate(assignments):
+            gi = offset + local_i
+            for centroid in row:
+                if centroid >= 0:
+                    centroid_to_ids.setdefault(int(centroid), set()).add(gi)
+        del v, canopy
+
+    pair_buckets: dict[int, list[tuple[int, int]]] = {w: [] for w in range(n_workers)}
+    seen: set[tuple[int, int]] = set()
+    for ids in centroid_to_ids.values():
+        ids = sorted(ids)
+        for k in range(len(ids)):
+            for l2 in range(k + 1, len(ids)):
+                a, b = ids[k], ids[l2]
+                key = (a, b)
+                if key in seen:
+                    continue
+                seen.add(key)
+                owner = hash_pair(a, b, n_workers)
+                pair_buckets[owner].append(key)
+
+    # --- stage 4: score owned pairs; fetch ONLY owned records from the store
+    scorer_state = _scorer_state_of(scorer)
+    batches: dict[int, tuple[list, list, list]] = {}
+    for w in range(n_workers):
+        pairs = pair_buckets[w]
+        if not pairs:
+            batches[w] = (pairs, [], [])
+            continue
+        positions = [p for pair in pairs for p in pair]
+        recs = vector_database.records_at(positions)
+        batches[w] = (pairs, recs[0::2], recs[1::2])
+
+    progress_queue = None
+    if progress_callback is not None:
+        import threading
+
+        try:
+            import multiprocessing
+
+            progress_queue = multiprocessing.Manager().Queue()
+            stop = threading.Event()
+
+            def _drain():
+                while not stop.is_set():
+                    try:
+                        got = progress_queue.get(timeout=0.2)
+                    except Exception:  # noqa: BLE001  (progress is best-effort)
+                        continue
+                    progress_callback(got)
+
+            drain_thread = threading.Thread(target=_drain, daemon=True)
+            drain_thread.start()
+        except Exception:  # noqa: BLE001  (progress is best-effort)
+            progress_queue = None
+
+    from functools import partial
+
+    def _thread_score(worker_id):
+        pairs, left, right = batches[worker_id]
+        return _score_owned_pairs_worker(
+            pairs, left, right, scorer_state, tau, progress_queue=progress_queue
+        )
+
+    if executor is not None:
+        use_cls = type(executor)
+        if use_cls is ThreadPoolExecutor:
+            scored_lists = list(executor.map(_thread_score, range(n_workers)))
+        else:
+            futures = [
+                executor.submit(
+                    partial(
+                        _score_owned_pairs_worker,
+                        pairs=batches[w][0], left_records=batches[w][1],
+                        right_records=batches[w][2], scorer_state=scorer_state,
+                        tau=tau, progress_queue=progress_queue,
+                    )
+                )
+                for w in range(n_workers)
+            ]
+            scored_lists = [f.result() for f in futures]
+    else:
+        if use_threads:
+            with ThreadPoolExecutor(max_workers=n_workers) as ex:
+                scored_lists = list(ex.map(_thread_score, range(n_workers)))
+        else:
+            with ProcessPoolExecutor(max_workers=n_workers) as ex:
+                futures = [
+                    ex.submit(
+                        partial(
+                            _score_owned_pairs_worker,
+                            pairs=batches[w][0], left_records=batches[w][1],
+                            right_records=batches[w][2], scorer_state=scorer_state,
+                            tau=tau, progress_queue=progress_queue,
+                        )
+                    )
+                    for w in range(n_workers)
+                ]
+                scored_lists = [f.result() for f in futures]
+    if progress_queue is not None:
+        stop.set()
+        drain_thread.join(timeout=1.0)
+    edges = [e for lst in scored_lists for e in lst]
+
+    # --- stage 5: distributed closure + representatives from the store -----
+    assignment = distributed_closure_reduce(
+        edges, n, n_workers=n_workers, executor=executor
+    )
+    for cluster in assignment.clusters.values():
+        cluster.representative = vector_database.record_at(cluster.representative_position)
+    return assignment
 
 
 # ---------------------------------------------------------------------------

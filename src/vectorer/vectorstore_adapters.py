@@ -207,6 +207,31 @@ class QdrantVectorDatabase(VectorDatabase[dict]):
             raise IndexError(f"no record at position {position}")
         return dict(res[0].payload.get("record", {}))
 
+    def records_at(self, positions: Sequence[int]) -> list[dict]:
+        """Fetch many record payloads in a single ``retrieve`` round-trip."""
+        positions = [int(p) for p in positions]
+        if not positions:
+            return []
+        res = self._client.retrieve(
+            collection_name=self._collection, ids=positions, with_payload=True
+        )
+        by_id: dict[int, dict] = {}
+        for point in res:
+            payload = getattr(point, "payload", None)
+            if payload:
+                record = payload.get("record", {})
+                if record:
+                    by_id[int(point.id)] = dict(record)
+        out: list[dict] = []
+        for pos in positions:
+            cached = self._payload_cache.get(pos)
+            record = cached if cached is not None else by_id.get(pos)
+            if record is None:
+                raise IndexError(f"no record at position {pos}")
+            out.append(record)
+        self._payload_cache.update({pos: rec for pos, rec in zip(positions, out)})
+        return out
+
     def vectors(self) -> list[list[float]]:
         """Scroll all stored vectors (position-aligned with ``record_at``)."""
         out: list[list[float]] = []
@@ -229,6 +254,22 @@ class QdrantVectorDatabase(VectorDatabase[dict]):
             if offset is None:
                 break
         return out
+
+    def vectors_for(self, start: int, stop: int) -> list[list[float]]:
+        """Vectors at positions ``start..stop-1`` in one ``retrieve`` call.
+
+        Point ids are the framework's record positions, so ``retrieve`` with
+        the id range is a single round-trip with no scroll cursors to keep.
+        """
+        if start >= stop:
+            return []
+        ids = list(range(int(start), int(stop)))
+        res = self._client.retrieve(
+            collection_name=self._collection, ids=ids,
+            with_vectors=True, with_payload=False,
+        )
+        by_id = {int(p.id): list(p.vector) for p in res if getattr(p, "vector", None) is not None}
+        return [by_id.get(i, []) for i in ids]
 
     def _search(self, query: Any, k: int) -> tuple[list[int], list[float]]:
         # Qdrant >= 1.15 uses query_points; older clients use search.

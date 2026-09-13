@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Distributed batch from a pre-populated `VectorDatabase`** —
+  `distributed_batch_er(vector_database=db)` realizes the §7.2/§7.3 promise
+  that batch dedup can process datasets too large for a single node: records
+  and vectors live in the store (cluster-resident for `QdrantVectorDatabase`)
+  and only bounded pieces are pulled — one shard's vectors at a time for
+  canopy centroid training (cross-shard sampling) and assignment, only the
+  record payloads each worker's owned pairs need (batched ``records_at``
+  fetches, replacing the all-records broadcast), and one ``record_at`` per
+  output cluster for representatives.  ``records`` and ``vector_database``
+  are mutually exclusive, and given the same store contents the cluster
+  assignment is identical to the records path (assorted in tests across
+  thread/process/1-worker and the sampled-canonopy path).  The
+  `VectorDatabase` contract gained ``vectors_for(start, stop)`` (bounded
+  shard pull; `IndexingStrategy.reconstruct` range for in-memory, single
+  payload-free ``retrieve`` call for Qdrant) and ``records_at(positions)``
+  (single batched ``retrieve`` for Qdrant).
 - **Batch pipeline runs against a pre-populated `VectorDatabase`** —
   `BatchPipeline.run(vector_database=db)` mirrors the link/incremental
   story: populate the store once (usually incrementally, possibly in another

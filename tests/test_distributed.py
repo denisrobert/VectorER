@@ -9,6 +9,7 @@ from vectorer.blocking import assign_canopies, train_canopy_centroids
 from vectorer.clustering import SwooshClusterer
 from vectorer.comparisons import make_comparison
 from vectorer.distributed import (
+    _serialize,
     create_executor,
     distributed_batch_er,
     distributed_closure,
@@ -17,7 +18,9 @@ from vectorer.distributed import (
     hash_pair,
     streaming_distributed_closure,
 )
+from vectorer.embeddings import CharacterHashingEmbedding
 from vectorer.scoring import FellegiSunterScorer
+from vectorer.vectorstores import FlatIndex, InMemoryVectorDatabase
 
 
 def small_person_comparisons():
@@ -85,6 +88,99 @@ def test_distributed_single_worker_equals_serial(dataset, scorer):
         n_workers=1, use_threads=True,
     )
     assert dist.node_cluster == single.node_cluster
+
+
+def _store_of(dataset):
+    """A pre-populated store embedding the same text the records path sends."""
+    store = InMemoryVectorDatabase(
+        CharacterHashingEmbedding(dimension=384),
+        FlatIndex(normalize=False),
+        embed_text=_serialize,
+    )
+    store.add(dataset)
+    return store
+
+
+def _run_both(dataset, scorer, **kwargs):
+    from vectorer.distributed import distributed_batch_er
+
+    records_assign = distributed_batch_er(
+        dataset, scorer=scorer, n_canopies=3, overlap_m=2, tau=0.85, **kwargs
+    )
+    store_assign = distributed_batch_er(
+        vector_database=_store_of(dataset), scorer=scorer,
+        n_canopies=3, overlap_m=2, tau=0.85, **kwargs,
+    )
+    return records_assign, store_assign
+
+
+def test_distributed_store_matches_records_threads(dataset, scorer):
+    records_assign, store_assign = _run_both(dataset, scorer, n_workers=2, use_threads=True)
+    assert store_assign.node_cluster == records_assign.node_cluster
+    assert store_assign.node_cluster == _single_process(dataset, scorer).node_cluster
+
+
+def test_distributed_store_matches_records_processes(dataset, scorer):
+    records_assign, store_assign = _run_both(dataset, scorer, n_workers=2, use_threads=False)
+    assert store_assign.node_cluster == records_assign.node_cluster
+
+
+def test_distributed_store_single_worker_equals_serial(dataset, scorer):
+    records_assign, store_assign = _run_both(dataset, scorer, n_workers=1, use_threads=True)
+    assert store_assign.node_cluster == records_assign.node_cluster
+
+
+def test_distributed_store_matches_records_sampled_canopy(dataset, scorer):
+    # n=15 > sample_size=8 forces the cross-shard sampling path (centroid
+    # training never sees the full matrix); store and records feeds must agree.
+    records_assign, store_assign = _run_both(
+        dataset, scorer, n_workers=2, use_threads=True, sample_size=8,
+    )
+    assert store_assign.node_cluster == records_assign.node_cluster
+
+
+def test_distributed_store_fills_representatives(dataset, scorer):
+    assign = distributed_batch_er(
+        vector_database=_store_of(dataset), scorer=scorer,
+        n_canopies=3, overlap_m=2, tau=0.85, n_workers=2, use_threads=True,
+    )
+    for cluster in assign.clusters.values():
+        assert cluster.representative is not None
+        rep_pos = cluster.representative_position
+        assert dataset[rep_pos] == cluster.representative
+
+
+def test_distributed_store_requires_exactly_one_source(dataset, scorer):
+    with pytest.raises(ValueError, match="exactly one"):
+        distributed_batch_er(
+            dataset, _store_of(dataset), scorer=scorer, n_canopies=3, tau=0.85,
+        )
+    with pytest.raises(ValueError, match="exactly one"):
+        distributed_batch_er(scorer=scorer, n_canopies=3, tau=0.85)
+
+
+def test_distributed_empty_store(dataset, scorer):
+    store = InMemoryVectorDatabase(
+        CharacterHashingEmbedding(dimension=384),
+        FlatIndex(normalize=False),
+        embed_text=_serialize,
+    )
+    assign = distributed_batch_er(
+        vector_database=store, scorer=scorer, n_canopies=3, tau=0.85,
+        n_workers=2, use_threads=True,
+    )
+    assert len(assign.clusters) == 0
+    assert assign.node_cluster == {}
+
+
+def test_store_vectors_for_and_records_at(dataset):
+    store = _store_of(dataset)
+    n = len(dataset)
+    assert len(store.vectors_for(0, n)) == n
+    assert len(store.vectors_for(2, 5)) == 3
+    assert store.vectors_for(4, 4) == []
+    assert store.records_at([0, 2, n - 1]) == [dataset[0], dataset[2], dataset[n - 1]]
+    assert store.records_at([]) == []
 
 
 def test_hash_pair_is_deterministic():
