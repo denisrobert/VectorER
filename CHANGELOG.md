@@ -15,16 +15,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and vectors live in the store (cluster-resident for `QdrantVectorDatabase`)
   and only bounded pieces are pulled — one shard's vectors at a time for
   canopy centroid training (cross-shard sampling) and assignment, only the
-  record payloads each worker's owned pairs need (batched ``records_at``
-  fetches, replacing the all-records broadcast), and one ``record_at`` per
+  record payloads each worker's owned pairs need, and one ``record_at`` per
   output cluster for representatives.  ``records`` and ``vector_database``
   are mutually exclusive, and given the same store contents the cluster
   assignment is identical to the records path (assorted in tests across
-  thread/process/1-worker and the sampled-canonopy path).  The
-  `VectorDatabase` contract gained ``vectors_for(start, stop)`` (bounded
-  shard pull; `IndexingStrategy.reconstruct` range for in-memory, single
-  payload-free ``retrieve`` call for Qdrant) and ``records_at(positions)``
-  (single batched ``retrieve`` for Qdrant).
+  thread/process/1-worker and the sampled-canonopy path).  The scoring stage
+  is now a single shared implementation
+  (``distributed._score_owned_pairs`` + ``_score_owned_pairs_worker``): the
+  records form no longer broadcasts a flattened ``all_records`` to every
+  worker — it passes each worker the aligned left/right records of its owned
+  pairs too (driver-only ``records_by_pos`` look-up vs the store path's
+  batched ``records_at``), so both forms share one architecture and worker
+  memory is bounded by owned pairs.  The `VectorDatabase` contract gained
+  ``vectors_for(start, stop)`` (bounded shard pull; `IndexingStrategy.reconstruct`
+  range for in-memory, single payload-free ``retrieve`` call for Qdrant) and
+  ``records_at(positions)`` (single batched ``retrieve`` for Qdrant).
 - **Batch pipeline runs against a pre-populated `VectorDatabase`** —
   `BatchPipeline.run(vector_database=db)` mirrors the link/incremental
   story: populate the store once (usually incrementally, possibly in another

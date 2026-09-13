@@ -114,35 +114,6 @@ def _score_shard(left_records, right_records, scorer_state, tau):
     return mask, list(map(float, probs)), list(map(float, weights))
 
 
-def _score_worker(worker, pairs, all_records, scorer_state, tau, progress_queue=None,
-                  chunk_size: int = 4096):
-    """Module-level process-picklable worker: score a worker's owned pairs and
-    return the above-tau ScoredPairs with global positions attached.
-
-    Pairs are processed in chunks of ``chunk_size``; when ``progress_queue`` is
-    given, ``len(chunk)`` is enqueued after each chunk so the controller can
-    aggregate progress across workers (progress_queue is a shared/Manager
-    queue passed through ``functools.partial`` or an executor initializer)."""
-    out = []
-    left_all = [all_records[gi] for gi, gj in pairs]
-    right_all = [all_records[gj] for gi, gj in pairs]
-    for start in range(0, len(pairs), chunk_size):
-        end = start + chunk_size
-        pairs_chunk = pairs[start:end]
-        mask, probs, weights = _score_shard(
-            left_all[start:end], right_all[start:end], scorer_state, tau
-        )
-        if progress_queue is not None:
-            progress_queue.put(len(pairs_chunk))
-        out.extend(
-            ScoredPair(left_position=p[0], right_position=p[1],
-                       probability=prob, match_weight=weight)
-            for p, prob, weight, keep in zip(pairs_chunk, probs, weights, mask)
-            if keep
-        )
-    return out
-
-
 def _score_owned_pairs_worker(pairs, left_records, right_records, scorer_state, tau,
                               progress_queue=None, chunk_size: int = 4096):
     """Module-level worker: score ``pairs`` whose record payloads are given as
@@ -168,6 +139,109 @@ def _score_owned_pairs_worker(pairs, left_records, right_records, scorer_state, 
             if keep
         )
     return out
+
+
+def _score_owned_pairs(
+    pair_buckets,
+    record_fetcher,
+    scorer_state: dict,
+    tau: float,
+    *,
+    n_workers: int,
+    use_threads: bool = False,
+    executor: Optional[Any] = None,
+    progress_callback: Optional[Callable[[int], None]] = None,
+) -> list[ScoredPair]:
+    """Score each worker's owned pairs in parallel (the shared stage 4).
+
+    ``pair_buckets[w]`` is worker ``w``'s owned ``(i, j)`` pairs, and
+    ``record_fetcher(positions)`` returns the record payloads for those
+    positions (position-aligned) -- the only driver-side difference between
+    the records path (a look-up into the parsed list) and the store path (a
+    batched ``VectorDatabase.records_at``).  Each worker therefore receives
+    only the records of the pairs it owns, never a copy of the whole dataset.
+    Returns the above-``tau`` ``ScoredPair`` edges.
+    """
+    batches: dict[int, tuple[list, list, list]] = {}
+    for w in range(n_workers):
+        pairs = pair_buckets[w]
+        if not pairs:
+            batches[w] = (pairs, [], [])
+            continue
+        positions = [p for pair in pairs for p in pair]
+        recs = record_fetcher(positions)
+        batches[w] = (pairs, recs[0::2], recs[1::2])
+
+    progress_queue = None
+    if progress_callback is not None:
+        import threading
+
+        try:
+            import multiprocessing
+
+            progress_queue = multiprocessing.Manager().Queue()
+            stop = threading.Event()
+
+            def _drain():
+                while not stop.is_set():
+                    try:
+                        got = progress_queue.get(timeout=0.2)
+                    except Exception:  # noqa: BLE001  (progress is best-effort)
+                        continue
+                    progress_callback(got)
+
+            drain_thread = threading.Thread(target=_drain, daemon=True)
+            drain_thread.start()
+        except Exception:  # noqa: BLE001  (progress is best-effort)
+            progress_queue = None
+
+    from functools import partial
+
+    def _thread_score(worker_id):
+        pairs, left, right = batches[worker_id]
+        return _score_owned_pairs_worker(
+            pairs, left, right, scorer_state, tau, progress_queue=progress_queue
+        )
+
+    if executor is not None:
+        use_cls = type(executor)
+        if use_cls is ThreadPoolExecutor:
+            scored_lists = list(executor.map(_thread_score, range(n_workers)))
+        else:
+            futures = [
+                executor.submit(
+                    partial(
+                        _score_owned_pairs_worker,
+                        pairs=batches[w][0], left_records=batches[w][1],
+                        right_records=batches[w][2], scorer_state=scorer_state,
+                        tau=tau, progress_queue=progress_queue,
+                    )
+                )
+                for w in range(n_workers)
+            ]
+            scored_lists = [f.result() for f in futures]
+    else:
+        if use_threads:
+            with ThreadPoolExecutor(max_workers=n_workers) as ex:
+                scored_lists = list(ex.map(_thread_score, range(n_workers)))
+        else:
+            with ProcessPoolExecutor(max_workers=n_workers) as ex:
+                futures = [
+                    ex.submit(
+                        partial(
+                            _score_owned_pairs_worker,
+                            pairs=batches[w][0], left_records=batches[w][1],
+                            right_records=batches[w][2], scorer_state=scorer_state,
+                            tau=tau, progress_queue=progress_queue,
+                        )
+                    )
+                    for w in range(n_workers)
+                ]
+                scored_lists = [f.result() for f in futures]
+    if progress_queue is not None:
+        stop.set()
+        drain_thread.join(timeout=1.0)
+    return [e for lst in scored_lists for e in lst]
 
 
 def _scorer_from_state(state):
@@ -627,7 +701,7 @@ def _distributed_batch_er_from_records(
     if n == 0:
         return ClusterAssignment(node_cluster={}, clusters={}, n_pairs_evaluated=0, n_pairs_matched=0)
 
-    # Contiguous shards so that the flattened ``all_records`` order matches the
+    # Contiguous shards so that the flattened ``records_by_pos`` order matches the
     # original record order -- required for global ids to equal the positions
     # the single-process pipeline produces (and for identical results).
     boundaries = [n * w // n_workers for w in range(n_workers + 1)]
@@ -705,74 +779,14 @@ def _distributed_batch_er_from_records(
 
     # --- stage 4: score owned pairs in parallel (map, drop below-tau) ------
     scorer_state = _scorer_state_of(scorer)
-    all_records = [r for shard in parsed_shards for r in shard]
-    progress_queue = None
-    if progress_callback is not None:
-        import threading
-
-        try:
-            import multiprocessing
-
-            progress_queue = multiprocessing.Manager().Queue()
-            stop = threading.Event()
-
-            def _drain():
-                while not stop.is_set():
-                    try:
-                        n = progress_queue.get(timeout=0.2)
-                    except Exception:
-                        continue
-                    progress_callback(n)
-
-            drain_thread = threading.Thread(target=_drain, daemon=True)
-            drain_thread.start()
-        except Exception:  # noqa: BLE001  (progress is best-effort)
-            progress_queue = None
-
-    from functools import partial
-
-    worker = partial(_score_worker, all_records=all_records,
-                     scorer_state=scorer_state, tau=tau,
-                     progress_queue=progress_queue)
-
-    def _thread_score(worker_id):
-        return _score_worker(worker_id, pair_buckets[worker_id],
-                             all_records, scorer_state, tau,
-                             progress_queue=progress_queue)
-
-    if executor is not None:
-        use_cls = type(executor)
-        if use_cls is ThreadPoolExecutor:
-            scored_lists = list(executor.map(_thread_score, range(n_workers)))
-        else:
-            futures = [
-                executor.submit(
-                    partial(_score_worker, worker=w, pairs=pair_buckets[w],
-                            all_records=all_records, scorer_state=scorer_state,
-                            tau=tau, progress_queue=progress_queue)
-                )
-                for w in range(n_workers)
-            ]
-            scored_lists = [f.result() for f in futures]
-    else:
-        if use_threads:
-            with ThreadPoolExecutor(max_workers=n_workers) as ex:
-                scored_lists = list(ex.map(_thread_score, range(n_workers)))
-        else:
-            with ProcessPoolExecutor(max_workers=n_workers) as ex:
-                futures = [
-                    ex.submit(
-                        partial(_score_worker, worker=w, pairs=pair_buckets[w],
-                                all_records=all_records, scorer_state=scorer_state,
-                                tau=tau, progress_queue=progress_queue)
-                    )
-                    for w in range(n_workers)
-                ]
-                scored_lists = [f.result() for f in futures]
-    if progress_queue is not None:
-        stop.set()
-        drain_thread.join(timeout=1.0)
-    edges = [e for lst in scored_lists for e in lst]
+    records_by_pos = [r for shard in parsed_shards for r in shard]
+    edges = _score_owned_pairs(
+        pair_buckets,
+        lambda positions: [records_by_pos[p] for p in positions],
+        scorer_state, tau,
+        n_workers=n_workers, use_threads=use_threads, executor=executor,
+        progress_callback=progress_callback,
+    )
 
     # --- stage 5: distributed closure over the above-tau edges -------------
     # Use the weighted reduce (Milestones B-C): the driver no longer holds all
@@ -877,86 +891,13 @@ def _distributed_batch_er_from_store(
 
     # --- stage 4: score owned pairs; fetch ONLY owned records from the store
     scorer_state = _scorer_state_of(scorer)
-    batches: dict[int, tuple[list, list, list]] = {}
-    for w in range(n_workers):
-        pairs = pair_buckets[w]
-        if not pairs:
-            batches[w] = (pairs, [], [])
-            continue
-        positions = [p for pair in pairs for p in pair]
-        recs = vector_database.records_at(positions)
-        batches[w] = (pairs, recs[0::2], recs[1::2])
-
-    progress_queue = None
-    if progress_callback is not None:
-        import threading
-
-        try:
-            import multiprocessing
-
-            progress_queue = multiprocessing.Manager().Queue()
-            stop = threading.Event()
-
-            def _drain():
-                while not stop.is_set():
-                    try:
-                        got = progress_queue.get(timeout=0.2)
-                    except Exception:  # noqa: BLE001  (progress is best-effort)
-                        continue
-                    progress_callback(got)
-
-            drain_thread = threading.Thread(target=_drain, daemon=True)
-            drain_thread.start()
-        except Exception:  # noqa: BLE001  (progress is best-effort)
-            progress_queue = None
-
-    from functools import partial
-
-    def _thread_score(worker_id):
-        pairs, left, right = batches[worker_id]
-        return _score_owned_pairs_worker(
-            pairs, left, right, scorer_state, tau, progress_queue=progress_queue
-        )
-
-    if executor is not None:
-        use_cls = type(executor)
-        if use_cls is ThreadPoolExecutor:
-            scored_lists = list(executor.map(_thread_score, range(n_workers)))
-        else:
-            futures = [
-                executor.submit(
-                    partial(
-                        _score_owned_pairs_worker,
-                        pairs=batches[w][0], left_records=batches[w][1],
-                        right_records=batches[w][2], scorer_state=scorer_state,
-                        tau=tau, progress_queue=progress_queue,
-                    )
-                )
-                for w in range(n_workers)
-            ]
-            scored_lists = [f.result() for f in futures]
-    else:
-        if use_threads:
-            with ThreadPoolExecutor(max_workers=n_workers) as ex:
-                scored_lists = list(ex.map(_thread_score, range(n_workers)))
-        else:
-            with ProcessPoolExecutor(max_workers=n_workers) as ex:
-                futures = [
-                    ex.submit(
-                        partial(
-                            _score_owned_pairs_worker,
-                            pairs=batches[w][0], left_records=batches[w][1],
-                            right_records=batches[w][2], scorer_state=scorer_state,
-                            tau=tau, progress_queue=progress_queue,
-                        )
-                    )
-                    for w in range(n_workers)
-                ]
-                scored_lists = [f.result() for f in futures]
-    if progress_queue is not None:
-        stop.set()
-        drain_thread.join(timeout=1.0)
-    edges = [e for lst in scored_lists for e in lst]
+    edges = _score_owned_pairs(
+        pair_buckets,
+        lambda positions: vector_database.records_at(positions),
+        scorer_state, tau,
+        n_workers=n_workers, use_threads=use_threads, executor=executor,
+        progress_callback=progress_callback,
+    )
 
     # --- stage 5: distributed closure + representatives from the store -----
     assignment = distributed_closure_reduce(
