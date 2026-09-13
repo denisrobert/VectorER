@@ -270,7 +270,9 @@ def test_distributed_records_honors_embed_text(dataset, scorer):
 
 
 def test_sentence_transformer_settings_carry_backend():
-    import sentence_transformers as st_mod
+    # sentence-transformers is an optional extra; skip the relay check when
+    # the package is not installed (the constructor imports it lazily).
+    st_mod = pytest.importorskip("sentence_transformers")
     from unittest import mock
 
     captured = {}
