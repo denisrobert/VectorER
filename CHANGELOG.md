@@ -92,6 +92,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`vectorer.distributed` converted to a package** — ``distributed.py``
+  (~1100 lines) is now ``distributed/`` with one responsibility per module:
+  `_core` (pair ownership), `_canopy` (shard embedding / local assignment /
+  cross-shard centroid sampling), `_executors` (process / thread / Ray),
+  `_scoring` (FS scoring map: owned pairs, above-tau edges only), `_closure`
+  (exact connected components, streaming + machine-distributed),
+  `_tf` (global term-frequency pre-reduction), and `_batch` (the
+  ``distributed_batch_er`` records/store orchestrators).  The public import
+  surface is unchanged: every name still resolves from
+  ``from vectorer.distributed import ...`` (re-exported through the package
+  `__init__`), and the multiprocessing/Ray worker functions pickle by their
+  new submodule paths — verified by the process-pool tests.
+
 ### Fixed
 
 ### Removed

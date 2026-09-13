@@ -44,7 +44,7 @@ The package is organised around contracts rather than a monolithic pipeline:
 | `incremental.py` | **Operational mode 1**: streaming/online resolution |
 | `batch.py` | **Operational mode 2**: whole-dataset clustering |
 | `link.py` | **Operational mode 3**: two-database record linkage |
-| `distributed.py` | Additive distributed executor for batch ER (same result as `batch.py`) |
+| `distributed/` | Additive distributed executor for batch ER (same result as `batch.py`): shard canopy (`_canopy`), FS scoring map (`_scoring`), exact closure (`_closure`), executors (`_executors`) |
 
 ### 1.1 Why not SQL?
 

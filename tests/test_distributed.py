@@ -9,7 +9,6 @@ from vectorer.blocking import assign_canopies, train_canopy_centroids
 from vectorer.clustering import SwooshClusterer
 from vectorer.comparisons import make_comparison
 from vectorer.distributed import (
-    _serialize,
     create_executor,
     distributed_batch_er,
     distributed_closure,
@@ -18,6 +17,7 @@ from vectorer.distributed import (
     hash_pair,
     streaming_distributed_closure,
 )
+from vectorer.distributed._canopy import _serialize
 from vectorer.embeddings import CharacterHashingEmbedding
 from vectorer.scoring import FellegiSunterScorer
 from vectorer.vectorstores import FlatIndex, InMemoryVectorDatabase
