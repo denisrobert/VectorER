@@ -17,6 +17,7 @@ import numpy as np
 from ..blocking import train_canopy_centroids
 from ..clustering import ClusterAssignment
 from ..embeddings import CharacterHashingEmbedding, EmbeddingModel
+from ..records import EMBED_DEFAULT
 from ..scoring import FellegiSunterScorer
 from ..vectorstores import VectorDatabase
 from ._canopy import _assign_shard, _embed_shard, _embedder_state_of, gather_canopy_sample
@@ -37,6 +38,7 @@ def distributed_batch_er(
     n_workers: int = 2,
     embed_dim: int = 384,
     embedder: Optional[EmbeddingModel] = None,
+    embed_text: Optional[Callable[[dict], str]] = None,
     sample_size: Optional[int] = 200_000,
     use_threads: bool = False,
     executor: Optional[Any] = None,
@@ -70,6 +72,12 @@ def distributed_batch_er(
       :meth:`EmbeddingModel.to_settings`; workers rebuild it from those
       settings, so a heavy model (sentence-transformer, GPU) is **loaded once
       per worker** -- the expected cost in a distributed run.
+    * ``embed_text`` renders each record to the embedding text, exactly like
+      ``BatchPipeline(embed_text=...)`` / ``build_batch_pipeline(embed_text=...)``.
+      It must match the serializer used at ingest/query (default
+      :data:`~vectorer.records.EMBED_DEFAULT`, the schema-agnostic
+      ``field: value`` lines); pass ``positional_embed_text(...)`` etc. to
+      reproduce a custom single-process text space.
     * ``scorer`` is serialized to each worker via its settings -- the same
       m/u, prior and threshold as single-process.
     * The closure over the above-tau edges is the exact distributed union-find,
@@ -89,6 +97,7 @@ def distributed_batch_er(
     return _distributed_batch_er_from_records(
         records,  # type: ignore[arg-type]
         embedder_state=_embedder_state_of(embedder),
+        embed_text=embed_text if embed_text is not None else EMBED_DEFAULT,
         scorer=scorer, n_canopies=n_canopies, overlap_m=overlap_m, tau=tau,
         seed=seed, n_workers=n_workers,
         sample_size=sample_size, use_threads=use_threads, executor=executor,
@@ -100,6 +109,7 @@ def _distributed_batch_er_from_records(
     records: Sequence[Any],
     *,
     embedder_state: dict,
+    embed_text: Callable[[dict], str] = EMBED_DEFAULT,
     scorer: FellegiSunterScorer,
     n_canopies: int,
     overlap_m: int = 2,
@@ -124,6 +134,10 @@ def _distributed_batch_er_from_records(
       :meth:`EmbeddingModel.to_settings`); each worker rebuilds the model from
       these settings, so results match ``build_batch_pipeline(embedder=...)``
       embedding with the same model.
+    * ``embed_text`` is the record serializer (default
+      :data:`~vectorer.records.EMBED_DEFAULT`); the workers call it with each
+      parsed record before embedding, exactly as ``build_batch_pipeline(
+      embed_text=...)`` would.
     * ``scorer`` is serialized to each worker via its settings -- the same
       m/u, prior and threshold as single-process.
     * The closure over the above-tau edges is the exact distributed union-find,
@@ -147,10 +161,10 @@ def _distributed_batch_er_from_records(
     def _run_embed():
         if executor is not None:
             return list(executor.map(
-                lambda shard: _embed_shard(shard, embedder_state), shards))
+                lambda shard: _embed_shard(shard, embedder_state, embed_text), shards))
         with ThreadPoolExecutor(max_workers=n_workers) as ex:
             return list(ex.map(
-                lambda shard: _embed_shard(shard, embedder_state), shards))
+                lambda shard: _embed_shard(shard, embedder_state, embed_text), shards))
 
     shard_data = _run_embed()
     parsed_shards = [d[0] for d in shard_data]

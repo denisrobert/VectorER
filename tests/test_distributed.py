@@ -17,12 +17,12 @@ from vectorer.distributed import (
     hash_pair,
     streaming_distributed_closure,
 )
-from vectorer.distributed._canopy import _serialize
 from vectorer.embeddings import (
     CharacterHashingEmbedding,
     SentenceTransformerEmbedding,
     embedder_from_settings,
 )
+from vectorer.records import EMBED_DEFAULT, positional_embed_text
 from vectorer.scoring import FellegiSunterScorer
 from vectorer.vectorstores import FlatIndex, InMemoryVectorDatabase
 
@@ -99,7 +99,7 @@ def _store_of(dataset):
     store = InMemoryVectorDatabase(
         CharacterHashingEmbedding(dimension=384),
         FlatIndex(normalize=False),
-        embed_text=_serialize,
+        embed_text=EMBED_DEFAULT,
     )
     store.add(dataset)
     return store
@@ -167,7 +167,7 @@ def test_distributed_empty_store(dataset, scorer):
     store = InMemoryVectorDatabase(
         CharacterHashingEmbedding(dimension=384),
         FlatIndex(normalize=False),
-        embed_text=_serialize,
+        embed_text=EMBED_DEFAULT,
     )
     assign = distributed_batch_er(
         vector_database=store, scorer=scorer, n_canopies=3, tau=0.85,
@@ -230,6 +230,43 @@ def test_embedder_settings_roundtrip():
     assert rebuilt.embed("hello world") == embedder.embed("hello world")
     with pytest.raises(ValueError, match="unknown embedding model settings"):
         embedder_from_settings({"type": "nope"})
+
+
+def test_distributed_records_honors_embed_text(dataset, scorer):
+    # A custom serializer must flow into the distributed shard embedding,
+    # exactly like BatchPipeline(embed_text=...): end-to-end parity with the
+    # same-serializer single-process pipeline, and a deterministic vector-level
+    # proof that embed_text (not the default) was used.
+    from vectorer.batch import BatchPipeline
+    from vectorer.distributed._canopy import _embed_shard
+
+    embedder = CharacterHashingEmbedding(dimension=96, ngrams=(1, 2))
+    serializer = positional_embed_text(
+        ["first_name", "last_name", "date_of_birth", "email", "address"],
+        delimiter="|",
+    )
+    single = BatchPipeline(
+        embedder=embedder, scorer=scorer, n_canopies=3, overlap_m=2,
+        canopy_seed=42, tau=0.85, embed_text=serializer,
+    ).run(dataset).assignment
+    custom = distributed_batch_er(
+        dataset, embedder=embedder, embed_text=serializer,
+        scorer=scorer, n_canopies=3, overlap_m=2, tau=0.85,
+        n_workers=2, use_threads=True,
+    )
+    assert custom.node_cluster == single.node_cluster
+
+    _, custom_vecs = _embed_shard(dataset, embedder.to_settings(), serializer)
+    _, default_vecs = _embed_shard(dataset, embedder.to_settings(), EMBED_DEFAULT)
+    assert not np.array_equal(custom_vecs, default_vecs)
+    expected = np.asarray(
+        BatchPipeline(
+            embedder=embedder, scorer=scorer, n_canopies=3, overlap_m=2,
+            canopy_seed=42, tau=0.85, embed_text=serializer,
+        ).embed_all(dataset),
+        dtype="float32",
+    )
+    assert np.array_equal(custom_vecs, expected)
 
 
 def test_sentence_transformer_settings_carry_backend():

@@ -3,32 +3,41 @@
 The driver trains canopy centroids on a cross-shard sample
 (:func:`gather_canopy_sample`) and each worker assigns its local shard via
 :func:`_assign_shard`; shards are embedded with the deterministic hashing
-embedder (:func:`_embed_shard`) so no model object needs to be shipped.
+embedder (:func:`_embed_shard`) so no model object needs to be shipped.  The
+record-to-text rendering is the caller's serializer (default
+:data:`~vectorer.records.EMBED_DEFAULT`), so the distributed records path and
+``build_batch_pipeline(embed_text=...)`` use the same text space.
 """
 
 from __future__ import annotations
 
-from typing import Sequence
+from typing import Callable, Sequence
 
 import numpy as np
 
 from ..blocking import assign_canopies
-from ..records import to_record_dict
+from ..records import EMBED_DEFAULT, to_record_dict
 
 
-def _embed_shard(records, embedder_state: dict) -> tuple[list[dict], np.ndarray]:
+def _embed_shard(
+    records,
+    embedder_state: dict,
+    serializer: Callable[[dict], str] = EMBED_DEFAULT,
+) -> tuple[list[dict], np.ndarray]:
     """Parse + embed a shard with the model rebuilt from its settings.
 
     The embedder is reconstructed per worker from plain settings (no model
     object is shipped), so a heavy model -- e.g. a sentence-transformer on a
     GPU -- is loaded once per worker, which is the expected cost in a large
-    distributed run.
+    distributed run.  ``serializer`` renders each record to the embedding text
+    and must match the serializer used to build/inspect the data (ingest and
+    query live in one text space).
     """
     from ..embeddings import embedder_from_settings
 
     embedder = embedder_from_settings(embedder_state)
     parsed = [to_record_dict(r) for r in records]
-    texts = [_serialize(r) for r in parsed]
+    texts = [serializer(r) for r in parsed]
     vecs = np.asarray(embedder.embed_many(texts), dtype="float32")
     return parsed, vecs
 
@@ -43,10 +52,6 @@ def _embedder_state_of(embedder) -> dict:
             f"{type(embedder).__name__}"
         )
     return to_settings()
-
-
-def _serialize(record: dict) -> str:
-    return "\n".join(f"{k}: {v}" for k, v in record.items() if v is not None)
 
 
 def _assign_shard(vectors, centroids, overlap_m):

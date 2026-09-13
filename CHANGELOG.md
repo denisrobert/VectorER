@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`distributed_batch_er(records, embed_text=...)` honors the record
+  serializer** — the records path no longer hard-codes the schema-agnostic
+  ``field: value`` renderer: ``_embed_shard`` threads the caller's serializer
+  (default :data:`~vectorer.records.EMBED_DEFAULT`) so the distributed run
+  lives in the same text space as ``build_batch_pipeline(embed_text=...)`` --
+  pass ``positional_embed_text(...)`` / ``template_embed_text(...)`` to
+  reproduce a custom single-process text space instead of silently drifting
+  (the same consistency fix applied earlier to `BatchPipeline`).
 - **`EmbeddingModel.to_settings()` / `embedder_from_settings()`** — the
   embedding interface gained serializable constructor settings (mirroring the
   scorer's `to_settings`), and `distributed_batch_er(records, embedder=...)`
