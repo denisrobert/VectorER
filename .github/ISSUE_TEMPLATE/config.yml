@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Feature requests and design discussions
+    url: https://github.com/denisrobert/VectorER/discussions
+    about: Per CONTRIBUTING.md, every change begins as an approved GitHub discussion. Please propose features and design questions there rather than as issues.

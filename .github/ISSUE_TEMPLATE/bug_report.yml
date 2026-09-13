@@ -1,0 +1,97 @@
+name: Bug report
+description: Report a defect in vector-er, with enough information to replicate it in a repeatable environment.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting. `vector-er` is beta software (pre-`1.0.0`), so
+        **no response-time guarantee is made until the release**.
+
+        Reports are most useful when they contain everything required to
+        **replicate the issue in a repeatable environment** — enough
+        environmental information to reproduce the conditions under which the
+        issue was found. Please fill in all applicable fields; issues that
+        cannot be reproduced from the provided information are hard to act on.
+  - type: input
+    id: version
+    attributes:
+      label: vectorer version
+      description: From `python -c "import vectorer; print(vectorer.__version__)"`. For source checkouts, give the commit SHA or branch.
+      placeholder: "e.g. 0.5.3, or git commit abc1234"
+    validations:
+      required: true
+  - type: input
+    id: python
+    attributes:
+      label: Python version
+      description: From `python --version`.
+      placeholder: "e.g. 3.12.4"
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      description: OS, distribution/version, and CPU architecture, as applicable.
+      placeholder: "e.g. Windows 11 x86_64, Ubuntu 24.04, macOS 15 (Apple Silicon)"
+    validations:
+      required: true
+  - type: input
+    id: install
+    attributes:
+      label: Installation
+      description: How vectorer was installed, including any extras or options.
+      placeholder: 'e.g. `pip install vectorer`, `pip install "vectorer[embedding]"`, editable source install'
+    validations:
+      required: true
+  - type: input
+    id: deps
+    attributes:
+      label: Dependency versions (if relevant)
+      description: e.g. numpy, faiss-cpu, and optional sentence-transformers / openai / qdrant-client versions. Helpful when the issue may be version-dependent.
+      placeholder: "e.g. numpy 1.26.4, faiss-cpu 1.8.0, sentence-transformers 3.0.1"
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What happened, and what impact it had.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: A minimal, self-contained script or exact step-by-step commands that reproduce the issue in a fresh environment. Inline any synthetic data setup — the reproduction must run without access to your private data.
+      placeholder: |
+        ```python
+        # paste a minimal reproduction here
+        ```
+      render: python
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What you expected to happen.
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What actually happened. Include the full traceback or error output.
+      placeholder: |
+        ```
+        Traceback (most recent call last):
+        ...
+        ```
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Other environmental information (optional)
+      description: Anything else needed to replicate the conditions — dataset characteristics (size, dimensions, embedding model), blocking/scoring configuration, threading or Ray settings, external services (Qdrant, OpenAI), memory/disk constraints.
