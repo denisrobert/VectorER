@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-18
+
 ### Added
 
 - **`distributed_batch_er(records, embed_text=...)` honors the record
@@ -604,6 +606,7 @@ Initial public release of `vectorer` on PyPI.
 - **Documentation**: `README.md`, `.docs/architecture.md`, `.docs/user_guide.md`,
   `.source-papers/`.
 
+[0.6.0]: https://github.com/denisrobert/VectorER
 [0.5.3]: https://github.com/denisrobert/VectorER
 [0.5.2]: https://github.com/denisrobert/VectorER
 [0.5.1]: https://github.com/denisrobert/VectorER
