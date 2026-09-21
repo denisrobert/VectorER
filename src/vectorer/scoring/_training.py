@@ -5,7 +5,8 @@
 * :meth:`TrainingMixin.fit_em` -- unsupervised expectation maximisation on a
   (near-duplicate-bearing) population;
 * :meth:`TrainingMixin.recalibrate_prior` -- recover the full-set base prior
-  for a scorer trained on an enriched subset (Yancey 2004 / empirical).
+  for a scorer trained on an enriched subset (Yancey 2004 / empirical /
+  capture-recapture).
 """
 
 from __future__ import annotations
@@ -327,6 +328,8 @@ class TrainingMixin:
         sample_size: int = 200_000,
         seed: Optional[int] = None,
         recall: float = 1.0,
+        n_captures: Optional[tuple[int, int, int]] = None,
+        confidence: float = 0.95,
     ) -> "FellegiSunterScorer":
         """Recover the **full-set** match prior for a model trained on an
         enriched subset.
@@ -355,6 +358,16 @@ class TrainingMixin:
           the prior to the model's own expected match rate (optionally divided
           by ``recall`` to compensate for blocking that produced candidates).
 
+        * ``"lincoln_petersen"`` -- capture-recapture (see
+          :func:`~vectorer.scoring.estimate_prior_capture_recapture`).  ``n1,
+          n2, m`` (matches from two **independent** runs and their overlap) are
+          supplied via ``n_captures``; the prior is the Chapman point estimate
+          over ``C(len(records), 2)``.  Its ``prior_ci`` interval is the
+          practitioner's band for the prior sweep -- run
+          ``fit_em(fixed_prior=...)`` over that interval to choose the
+          operating point that the base rate miscalibration would otherwise
+          dominate.  ``recall`` is ignored for this method.
+
         ``method="yancey"`` requires the scorer to carry EM metadata (i.e. it
         was produced by :meth:`fit_em`); otherwise a :class:`ValueError` is
         raised.  Use the resulting scorer's ``fixed_prior`` (or the
@@ -364,10 +377,14 @@ class TrainingMixin:
             return self._recalibrate_empirical(
                 records, sample_size=sample_size, seed=seed, recall=recall,
             )
+        if method == "lincoln_petersen":
+            return self._recalibrate_lincoln_petersen(
+                records, n_captures=n_captures, confidence=confidence,
+            )
         if method != "yancey":
             raise ValueError(
-                f"unknown recalibrate_prior method {method!r}; "
-                "expected 'yancey' or 'empirical'"
+                f"unknown recalibrate_prior method {method!r}; expected "
+                "'yancey', 'empirical', or 'lincoln_petersen'"
             )
         if not self._em or "pi" not in self._em or "n_pairs" not in self._em:
             raise ValueError(
@@ -419,6 +436,37 @@ class TrainingMixin:
         full_prior = float(np.clip(base_rate, 1e-8, 0.5))
         new_settings = self.to_settings()
         new_settings["probability_two_random_records_match"] = full_prior
+        return self.__class__.from_settings(
+            new_settings, threshold=self.threshold,
+        )
+
+    def _recalibrate_lincoln_petersen(
+        self,
+        records: Sequence[dict],
+        *,
+        n_captures: Optional[tuple[int, int, int]],
+        confidence: float = 0.95,
+    ) -> "FellegiSunterScorer":
+        """Capture-recapture prior recovery (see :meth:`recalibrate_prior`).
+
+        ``n_captures = (n1, n2, m)`` are matches from two **independent** runs
+        and their overlap; the prior is the Chapman estimate over the whole
+        file's pair domain ``C(len(records), 2)``.
+        """
+        from ._capture_recapture import estimate_prior_capture_recapture
+
+        if n_captures is None:
+            raise ValueError(
+                "method='lincoln_petersen' requires n_captures=(n1, n2, m)"
+            )
+        n = len(records)
+        total_pairs = n * (n - 1) // 2
+        est = estimate_prior_capture_recapture(
+            n_captures[0], n_captures[1], n_captures[2],
+            total_pairs=total_pairs, confidence=confidence,
+        )
+        new_settings = self.to_settings()
+        new_settings["probability_two_random_records_match"] = float(est.prior)
         return self.__class__.from_settings(
             new_settings, threshold=self.threshold,
         )

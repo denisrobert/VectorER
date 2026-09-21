@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`benchmarks/benchmark_lp_prior_sweep.py`** — the capture-recapture
+  workflow, automated: two orthogonally-constructed capture runs (name vs
+  address evidence, neither touching the arena's block key) score the
+  framework's **blocked candidate pair space** (`build_blocked_pairs`, the
+  same generator EM trains on — the dense-match domain, editable via
+  `--block-on`), their tallies feed `estimate_prior_capture_recapture`, the
+  within-arena match count converts to a full-file prior via the blocking
+  recall (`--block-recall`, same knob `fit_em` uses), and the CI builds the
+  `fit_em(fixed_prior=...)` sweep grid inside the band.  The benchmark
+  reports the best-F1 operating point within the band vs the EM-learned- and
+  default-prior baselines at the same taus.  `--arena-mode uniform` remains
+  for small files / high-overlap linkage (on the 300k dedup population a
+  uniform arena either fails to overlap or is false-positive-dominated, which
+  was measured and is documented).
+- **Capture-recapture (Lincoln-Petersen) prior estimator** —
+  `vectorer.estimate_prior_capture_recapture(n1, n2, m, total_pairs=...)`
+  (returning a `CaptureRecapturePrior`; exported from `vectorer.scoring` and
+  top-level `vectorer`): Chapman's bias-corrected estimate of the total match
+  count from the tallies of **two independent** linkage runs and their
+  overlap, plus a lognormal interval (Seber variance) on the match total.
+  Because it uses only marginal counts, the prior it reports cannot be
+  distorted by comparison-model misspecification (the failure Yancey's
+  rescale is patching) — it exists to give practitioners a defensible
+  ``π̂ ± CI`` band to drive the prior sweep.  `recalibrate_prior(
+  method="lincoln_petersen", n_captures=(n1, n2, m))` applies the point
+  estimate to a scorer.  Independence of the two runs and an overlap
+  ≥ ~7 matches are the estimator's preconditions (validated / warned);
+  documented end-to-end in user guide §6.3.4 and the capture-recapture
+  recipe (how the CI defines the `--prior-sweep-priors` grid).
+
 ## [0.6.0] - 2026-09-18
 
 ### Added

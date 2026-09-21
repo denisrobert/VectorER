@@ -1106,6 +1106,93 @@ are available, validate them the way the prior-sweep does: if injected data
 reproduces the same operating-point curve as enrichment on real pairs, they
 agree; otherwise trust enrichment.
 
+### 6.3.4 Capture-recapture (Lincoln-Petersen): two independent runs give a prior band
+
+Every prior estimate above passes through the comparison model — EM's π, the
+Yancey rescale, even the empirical resample's posterior — so misspecification
+(notably conditional independence) can misstate the base rate.  A completely
+different source of prior signal is **capture-recapture**: if you run two
+independently-constructed linkage passes over the same records, the overlap
+between their match sets tells you, from *counts alone*, how many true matches
+exist:
+
+```python
+from vectorer import estimate_prior_capture_recapture
+
+# n1, n2, m = matches found by run1, run2, and by BOTH (the recapture overlap).
+# Get them from two independent runs: different field subsets, different
+# blocking schemes, or two different trained models over the same records.
+n1, n2, m = 4821, 4798, 3723          # matches above your operating threshold
+est = estimate_prior_capture_recapture(n1, n2, m, total_pairs=200_000 * 199_999 // 2)
+print(est)                            # prior ~ 0.00000031 [0.00000031, 0.00000031]
+```
+
+`est.prior` is the Chapman bias-corrected point estimate and `est.prior_ci`
+is its 95% interval — a *marginal*-count estimate that cannot be distorted by
+comparison-model error (the very error Yancey is patching).  It estimates
+nothing else: no `m/u`, no weights; it only pins the scalar base rate.
+
+**Use the interval to bound the π sweep.**  What practitioners actually want
+from the prior is a *defensible range for* `fixed_prior`, not one more point
+estimate.  Sweep exactly the LP band:
+
+```bash
+# Use the Python output above to build the grid, e.g. --prior-sweep-priors
+# "3.08e-7,3.11e-7,3.13e-7"  (π_low, π̂, π_high from est.prior_ci)
+python benchmarks/benchmark_bulk_er_em.py \
+  --data-file benchmarks/population_with_duplicates.json \
+  --gt-file benchmarks/population_gt.json \
+  --prior-sweep-priors "3.08e-7,3.11e-7,3.13e-7" \
+  --prior-sweep-taus "0.5,0.7,0.85,0.95" \
+  --n-training-subsample 20000 --em-max-pairs 30000
+```
+
+or equivalently `fit_em(fixed_prior=...)` over the three values.  If the
+operating point (precision/recall/F1) is stable across `π_low..π_high`, the
+prior is not the sensitivity; if recall/precision move materially across the
+band, **the decision surface is prior-sensitive** — report the sweep curve,
+not a single number.  To drive the bench programmatically, recompute the grid
+from the estimator:
+
+```python
+from vectorer import estimate_prior_capture_recapture
+est = estimate_prior_capture_recapture(n1, n2, m, total_pairs=n * (n - 1) // 2)
+low, high = est.prior_ci
+grid = [low, (low + high) / 2, high]
+```
+
+`recalibrate_prior(method="lincoln_petersen", n_captures=(n1, n2, m))`
+applies the point estimate directly to a scorer (`recall` is not applicable —
+the captures are already post-blocking).
+
+**Automated variant.**  `benchmarks/benchmark_lp_prior_sweep.py` runs the whole
+workflow end to end: two orthogonally-constructed capture runs (name vs
+address evidence, neither touching the arena's block key) over the
+framework's **blocked candidate space** (the same generator EM trains on),
+the Lincoln-Petersen estimate and its interval (converted to a full-file
+prior via the blocking recall), the `fixed_prior` sweep grid built from that
+band, and the best-F1 operating point inside the band compared against the
+EM-learned- and default-prior baselines at the same taus:
+
+```bash
+python benchmarks/benchmark_lp_prior_sweep.py \
+  --data-file benchmarks/population_with_duplicates.json \
+  --gt-file benchmarks/population_gt.json \
+  --capture-pairs 300000 --capture-tau 0.9 \
+  --block-on date_of_birth --block-recall 0.7 \
+  --output results/lp_prior_sweep.json
+```
+
+Truly-independent captures are the estimator's precondition — a run whose
+only evidence is the arena's block key collapses (it "matches" everything in
+the arena, and `m ≈ n₁` is a degeneracy the tool will show you).
+
+**Independence is your responsibility — the estimator cannot check it.**  Two
+nested thresholds are *not* independent captures, two runs sharing the same
+model/data are correlated, and correlated captures bias the estimate.  Use
+genuinely different evidence (field subsets, blockers, models) for the two
+runs, and treat overlaps below ~7 matches as too small to trust.
+
 ### 6.4 Importing trained parameters from Splink
 
 If the **base population was already deduplicated / linked with Splink**, or a

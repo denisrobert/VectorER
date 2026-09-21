@@ -426,6 +426,60 @@ def test_recalibrate_prior_yancey_requires_em_metadata():
         plain.recalibrate_prior(full, method="bogus")
 
 
+def test_estimate_prior_capture_recapture_chapman():
+    from vectorer.scoring import (
+        CaptureRecapturePrior,
+        estimate_prior_capture_recapture,
+    )
+
+    # Chapman: ((n1+1)(n2+1))/(m+1) - 1 = (51*61)/11 - 1 = 281.818...
+    est = estimate_prior_capture_recapture(50, 60, 10, total_pairs=19900)
+    assert isinstance(est, CaptureRecapturePrior)
+    assert est.matches_estimate == pytest.approx(281.8181818, abs=1e-3)
+    assert est.prior == pytest.approx(281.8181818 / 19900, rel=1e-6)
+    # Interval structure: lower >= m (recaptured), point inside the band.
+    assert est.matches_ci[0] >= 10
+    assert est.matches_ci[0] < est.matches_estimate < est.matches_ci[1]
+    assert est.prior_ci[0] < est.prior < est.prior_ci[1]
+    assert 0 < est.prior <= 0.5
+    # Without total_pairs only the match-total side is populated.
+    counts = estimate_prior_capture_recapture(50, 60, 10)
+    assert counts.prior is None and counts.prior_ci is None
+    assert counts.matches_estimate == pytest.approx(281.8181818, abs=1e-3)
+
+
+def test_estimate_prior_capture_recapture_guards():
+    from vectorer.scoring import estimate_prior_capture_recapture
+
+    with pytest.raises(ValueError, match="m must be > 0"):
+        estimate_prior_capture_recapture(50, 60, 0)
+    with pytest.raises(ValueError, match="cannot exceed min"):
+        estimate_prior_capture_recapture(50, 60, 61)
+    with pytest.raises(ValueError, match="confidence"):
+        estimate_prior_capture_recapture(50, 60, 10, confidence=1.0)
+    with pytest.warns(UserWarning, match="small overlap"):
+        estimate_prior_capture_recapture(50, 60, 4)
+
+
+def test_recalibrate_prior_lincoln_petersen():
+    from vectorer.comparisons import make_comparison
+
+    comps = [make_comparison('jaro_winkler_at_thresholds', col_name='first_name')]
+    model = FellegiSunterScorer.from_comparisons(comps)
+    full = [{'first_name': f'z{i}', 'last_name': 'w', 'date_of_birth': '2000-01-01',
+             'email': None, 'address': None} for i in range(200)]
+    cal = model.recalibrate_prior(
+        full, method="lincoln_petersen", n_captures=(50, 60, 10),
+    )
+    expected = 281.8181818 / (200 * 199 // 2)
+    prior = cal.to_settings()['probability_two_random_records_match']
+    assert prior == pytest.approx(expected, rel=1e-6)
+    assert 0 < prior <= 0.5
+    # n_captures is required for this method.
+    with pytest.raises(ValueError, match="n_captures"):
+        model.recalibrate_prior(full, method="lincoln_petersen")
+
+
 def test_fit_em_uses_fuzzy_blocking_for_perturbed_twins():
     """Case-flipped/typ'd twins must reach the blocked training pool.
 

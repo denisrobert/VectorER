@@ -57,7 +57,15 @@ from .comparisons import (
     time_decay_wrapper,
     time_decayed_comparison_builder,
 )
-from .scoring import DEFAULT_PRIOR, DEFAULT_THRESHOLD, FellegiSunterScorer, WeightTable, import_splink_scorer
+from .scoring import (
+    CaptureRecapturePrior,
+    DEFAULT_PRIOR,
+    DEFAULT_THRESHOLD,
+    FellegiSunterScorer,
+    WeightTable,
+    estimate_prior_capture_recapture,
+    import_splink_scorer,
+)
 from .classification import (
     Classifier,
     Decision,
@@ -147,6 +155,8 @@ __all__ = [
     "import_splink_scorer",
     "DEFAULT_PRIOR",
     "DEFAULT_THRESHOLD",
+    "estimate_prior_capture_recapture",
+    "CaptureRecapturePrior",
     # classification
     "Decision",
     "Classifier",

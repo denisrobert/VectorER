@@ -31,15 +31,21 @@ Pass ``idempotent=False`` to recover the raw calibrated posterior for
 identical-content pairs.
 """
 
+from ._capture_recapture import (
+    CaptureRecapturePrior,
+    estimate_prior_capture_recapture,
+)
 from ._constants import DEFAULT_PRIOR, DEFAULT_THRESHOLD
 from ._scorer import FellegiSunterScorer
 from ._splink import import_splink_scorer
 from ._weights import WeightTable
 
 __all__ = [
+    "CaptureRecapturePrior",
     "DEFAULT_PRIOR",
     "DEFAULT_THRESHOLD",
     "FellegiSunterScorer",
     "WeightTable",
+    "estimate_prior_capture_recapture",
     "import_splink_scorer",
 ]

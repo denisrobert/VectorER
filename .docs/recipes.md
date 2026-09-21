@@ -270,3 +270,85 @@ raises otherwise); only the numbers transfer, not the SQL tests; TF value
 tables are rebuilt from ``base_records=``; and exact-identical pairs score 1.0
 by default (``idempotent``) rather than Splink's raw posterior.  See the user
 guide §6.3 for the full caveat list.
+
+## Recipe: bounding the π sweep with capture-recapture (Lincoln-Petersen)
+
+**Goal.**  Choose the prior band for the `fixed_prior` sweep without trusting
+EM's miscalibrated base rate **or** the comparison model that produced it.
+Capture-recapture estimates the number of true matches from the *overlap of two
+independent linkage runs*, so it is immune to comparison-model error — at the
+price of requiring genuinely independent captures.
+
+**Step 1 — run two independent passes and collect three counts.**  Each pass
+produces its own match set at your operating threshold.  The runs must differ
+in what causes matches to be found — different field subsets, different
+blocking schemes, or two models trained on different data — because the
+overlap `m` is only informative if the captures are independent:
+
+```python
+# n1 = matches run 1 could find, n2 = matches run 2 could find,
+# m  = the matches both found.
+n1, n2, m = 4821, 4798, 3723
+```
+
+**Step 2 — estimate the prior and its band:**
+
+```python
+from vectorer import estimate_prior_capture_recapture
+
+n_records = 200_000
+est = estimate_prior_capture_recapture(
+    n1, n2, m,
+    total_pairs=n_records * (n_records - 1) // 2,
+    confidence=0.95,
+)
+print(est)               # prior ~ 3.106e-07 [3.084e-07, 3.129e-07]
+```
+
+`est.prior` is Chapman's bias-corrected estimate; `est.prior_ci` is the
+lognormal interval (Seber variance) on the match total, converted to prior
+space.  Both are clipped to the framework's calibration range `(0, 0.5]`.
+
+**Step 3 — sweep `fixed_prior` across the band.**  The band is the point of the
+exercise: validate that the operating point does not move on it.
+
+```python
+from vectorer.scoring import FellegiSunterScorer
+from vectorer.comparisons import make_comparison
+
+low, high = est.prior_ci
+grid = [low, (low + high) / 2, high]
+
+comparisons = [make_comparison('jaro_winkler_at_thresholds', col_name='first_name')]
+for prior in grid:                       # or use benchmark_bulk_er_em.py
+    scorer = FellegiSunterScorer.from_comparisons(comparisons).fit_em(
+        enriched_train, training_block_on=[("first_name",)],
+        fixed_prior=prior, max_iterations=50,
+    )
+    # score the labelled eval pairs; record precision/recall per tau
+```
+
+If precision/recall is flat across `[low, high]`, the prior is not the
+sensitivity — deploy any value in the band with confidence.  If it moves, the
+decision surface is prior-sensitive: report the sweep curve and pick the
+operating point by precision/recall within the band.
+
+**Step 4 — (optional) apply the point estimate to a scorer.**
+
+```python
+scorer = scorer.recalibrate_prior(
+    records, method="lincoln_petersen", n_captures=(n1, n2, m),
+)
+```
+
+**Caveats.** (1) Independence is yours to provide — nested thresholds or
+shared-model runs are correlated and bias the estimate (usually upward on the
+prior); in particular a run whose only evidence is the arena's block key
+collapses (constant evidence inside the arena → `m ≈ n₁` degeneracy).  (2)
+The default arena is the **blocked candidate space**; the match count it
+returns is within that space, so the full-file prior divides by the blocking
+recall (`--block-recall`) — use the same recall the EM prior uses.  Uniform
+full-domain arenas are only sound for small files or high-overlap two-file
+linkage.  (3) Overlaps below ~7 matches give a wide, unreliable interval (a
+`UserWarning` is emitted).  (4) The tool estimates only the scalar base rate;
+`m/u` must still come from supervised or EM calibration.
