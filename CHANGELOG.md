@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`.docs/calibration.md` — calibrating `π` and choosing the operating
+  point** — the identifiability note the prior work implied: `π` and the
+  threshold `τ` are aliased for decisions (`W ≥ logit(τ) − logit(π) =: κ`), so
+  the refinable quantity is the match-weight threshold `κ`, not `π`; the
+  F1-optimal operating point is generally not `p = 0.5` (Jansche 2005; Lipton
+  et al. 2014; Koyejo et al. 2014); the other performance levers (candidate
+  recall, `m/u`, levels, TF, clustering) and how to diagnose which binds; when
+  a genuine `π` (as an interval) is actually needed and the standing of each
+  method (EM, audited sample, capture-recapture/DSE, Bayesian hierarchical,
+  post-hoc calibration); and a 7-step workflow for maximizing
+  F1/precision/recall on held-out labelled pairs.  Cross-referenced from the
+  user guide §6.3 and the README docs index.
 - **`benchmarks/benchmark_lp_prior_sweep.py`** — the capture-recapture
   workflow, automated: two orthogonally-constructed capture runs (name vs
   address evidence, neither touching the arena's block key) score the
@@ -38,6 +50,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ≥ ~7 matches are the estimator's preconditions (validated / warned);
   documented end-to-end in user guide §6.3.4 and the capture-recapture
   recipe (how the CI defines the `--prior-sweep-priors` grid).
+- **Calibration references documented and curated** — `.docs/calibration.md`
+  now lists its references with the repository's global numbering and verified
+  DOIs/arXiv links, and `.source-papers/README.md` Part 2 records the new
+  numbers with their local copies: refs 22 (Ding & Fienberg 1994) and 23
+  (Gutman et al. 2013) supplied by the maintainer, and 25, 26, 28, 29, 30, 32,
+  33 downloaded from open sources (ACL Anthology, NeurIPS, arXiv, author/
+  MIT-Press copies). A study summary for Jaro (1989) was added at
+  `.source-papers/06_jaro_1989/JaroSummary.md`, alongside the existing
+  Belin & Rubin (1995) notes.
 
 ## [0.6.0] - 2026-09-18
 

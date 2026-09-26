@@ -1,0 +1,248 @@
+# Calibrating π and choosing the operating point
+
+This note explains what the Fellegi-Sunter base prior `π` is actually
+identifiable from, why "calibrating π" is usually the wrong question for
+matching performance, and the workflow that gives you the best achievable
+combination of F1 / precision / recall.
+
+If you only read one paragraph: **for decisions, `π` and the threshold `τ` are
+aliased into a single degree of freedom.** The quantity you can refine — and
+should optimize — is the *operating point* on the match-weight scale,
+`κ = logit(τ) − logit(π)`. `π` matters separately only when you need a
+probability readout or expected counts, and then it should be reported as an
+interval.
+
+---
+
+## 1. The alias: `π` and `τ` are one parameter
+
+The match weight (log Bayes factor) of the Fellegi–Sunter model [1] is
+
+```
+W = Σ log(mₖ / uₖ)
+```
+
+which is **independent of `π`**. The posterior follows from the prior by
+
+```
+posterior odds = (π/(1−π)) · eᵂ
+p = σ(W + logit(π))
+```
+
+The match decision `p ≥ τ` is therefore
+
+```
+W ≥ logit(τ) − logit(π) =: κ            (1)
+```
+
+so the decision depends on `(π, τ)` only through the single scalar `κ`. Every
+`(π, τ)` pair with the same `κ` gives **identical** match decisions — a
+one-parameter family (anti-diagonal level sets in the `(π, τ)` plane), not two
+independent knobs.
+
+With explicit decision costs the same thing happens: the optimal rule accepts
+iff
+
+```
+W > log(C₁₀ / C₀₁) − logit(π)           (2)
+```
+
+so `π` and the cost ratio combine additively into one threshold. `π`, `τ` and
+costs are mutually aliased for classification; only the combination is
+identified.
+
+**Why the "π is miscalibrated" problem feels real but isn't, for decisions.**
+EM's prior estimate is genuinely biased (Yancey 2004 [20]; Belin & Rubin 1995 [10]), but
+that bias is equivalent to an unknown shift in the decision constant. You do
+not have to fix it to match well — you have to choose `κ` well. The bias only
+bites when you (a) read the posterior as a probability, or (b) let EM re-fit
+`m/u` jointly with `π`, because then changing `π` also moves `W` (the level
+sets warp). Freezing the prior (`fixed_prior`) makes (1) exact.
+
+### Consequence for tuning
+
+- Tuning `π` at fixed `τ` **is** tuning `τ` at fixed `π`. Sweeping both is
+  sweeping the same axis twice.
+- The π-free parameterization — threshold on the match weight `W` — is the
+  clean one, and is what the practitioner literature recommends.
+- Keep a `π` convention only so `τ` has a meaning; it is a coordinate choice,
+  not a calibration.
+
+---
+
+## 2. What to optimize: the metric decides the threshold
+
+For a fixed `m/u` (hence fixed `W`), matching performance is a function of `κ`
+alone. Which `κ` is best depends entirely on the objective — and the required
+thresholds are *not* the same:
+
+| objective | the `κ` that optimizes it |
+|---|---|
+| accuracy / 0-1 loss at equal costs | posterior `p` = 0.5 |
+| cost-weighted (eq. 2) | `logit(π) + log(C₁₀/C₀₁)` relative shift |
+| precision at fixed recall (or vice-versa) | read off the P-R curve |
+| maximize F1 / Fβ | **generally not `p = 0.5`** |
+
+Maximizing F1 is not the same as thresholding the posterior at 0.5, and when
+positives are rare the F1-optimal threshold is typically **well below** 0.5 —
+this is a known result with plug-in/consistent algorithms (Jansche 2005;
+Lipton, Elkan & Naryanaswamy 2014; Koyejo et al. 2014). Since ER matches are
+rare pairs, the F1-optimal operating point is very often on the low side of
+the posterior scale — which is exactly why sweeping `τ` only over
+`0.5 … 0.99` can hide the best achievable F1. Threshold selection and
+quality measurement in linkage practice are treated at length by
+Christen (2012) [14].
+
+**Practical rule.** Scan `κ` (equivalently: emit match weights and threshold
+them) over a wide range on held-out labelled pairs, not `τ` over a narrow
+high range. Then translate your chosen `κ*` back to whatever `τ` you want to
+report, for your chosen `π` convention:
+
+```
+τ* = σ(κ* + logit(π))                   (3)
+```
+
+Because of (3), reporting a `(π, τ)` pair without the `κ` is under-determined
+for reproducibility: state `κ` (or state both).
+
+---
+
+## 3. `κ` is not the only lever — and often not the binding one
+
+`κ` moves you along the P-R curve; it cannot move the curve itself. The
+levers that do:
+
+1. **Candidate/blocking recall (the recall ceiling).** No threshold recovers a
+   pair blocking never generated. If precision is ~1.0 and recall plateaus, the
+   binding constraint is blocking (canopy parameters, `overlap_m`, HNSW
+   `ef_search`, blocking rules), not `κ`.
+2. **`m/u` quality.** u from large random pair samples (Winkler 2006 [2];
+   Herzog, Scheuren & Winkler 2007 [24]); m from EM on match-enriched blocks
+   (Jaro 1989 [6]; Yancey 2004 [20]). Supervised `m/u` from clerically reviewed
+   pairs is the strongest option when available.
+3. **Comparison levels and thresholds.** The level boundaries set `W`'s
+   resolution; poor boundaries cap achievable separation regardless of `κ`.
+4. **Term-frequency / population adjustments** (`base_records`, TF weight
+   tables) — these change `u` for common values and so change `W`.
+5. **Dedup clustering stage.** In batch dedup, `τ` gates the edges that the
+   Swoosh closure merges; the merge function (union vs representative) and
+   closure semantics affect cluster-level P/R beyond pair-level `κ`.
+
+Diagnose in this order: (a) candidate recall (can the true pairs even be
+scored?), (b) separability (`m/u` — is the P-R curve good at *its* best
+point?), (c) operating point (`κ`).
+
+---
+
+## 4. When you actually need `π` (not just `κ`)
+
+`π` is separately meaningful when you need:
+
+- a **probability readout** ("this pair has a 0.98 chance of being a match"),
+- **expected counts** ("about N true matches in this file"),
+- **portability** across datasets or blocks, where the pair density differs,
+- the **EM coupling** — if `π` is estimated jointly, it affects `m/u`.
+
+For decisions and for F1/precision/recall tuning, none of the above applies:
+use `κ`.
+
+When you do need `π`, the defensible options and their standing:
+
+| method | standing / caveat |
+|---|---|
+| EM mixture weight | standard but known biased (usually **upward**); Jaro 1989 [6]; Yancey 2004 [20]; Belin & Rubin 1995 [10] |
+| labelled/audited pair sample | unbiased if the sample is random and large enough; hopeless for very rare matches at full-pair scale |
+| blocking-corrected EM | necessary because the EM prior is a *blocked* rate; divide by blocking recall |
+| dual-system / capture-recapture | needs genuinely independent captures; false positives and correlated captures bias it (Ding & Fienberg 1994) |
+| Bayesian hierarchical ER | returns a posterior *distribution* for the match rate — the honest object (Tancredi & Liseo 2011; Gutman, Afendulis & Zaslavsky 2013; Steorts, Hall & Fienberg 2016) |
+| post-hoc calibration of `p` | recalibrate the returned posterior against a labelled sample (Platt 1999; Niculescu-Mizil & Caruana 2005) |
+
+**Never publish a single `π` as ground truth.** Report an interval, and state
+the operating point as `κ` so the decision is reproducible whatever `π`
+convention you chose.
+
+---
+
+## 5. Recommended workflow for best F1 / precision / recall
+
+1. **Define the objective quantitatively.** "Maximise F1", or "maximise recall
+   subject to precision ≥ 0.99", or a cost ratio. F1 weights precision and
+   recall equally; if your costs are asymmetric, use (2)/P-R-with-constraint
+   instead. Write it down before tuning.
+2. **Build a held-out labelled eval set.** Positives from a known registry /
+   audited sample; negatives that are *genuine* non-matches (not random pairs
+   from a near-duplicate-bearing population). Tune and report on held-out data
+   only.
+3. **Fit `m/u` well.** u from a large random pair sample; m from EM on
+   match-enriched blocks; supervised m/u if clerically-reviewed pairs exist.
+   **Freeze `π`** (any convention, e.g. `1e-4`) so `(π, τ)` stays on a known
+   level set.
+4. **Sweep `κ`, not `τ`.** Score the eval pairs to match weights `W`, then scan
+   a wide threshold range on `W` and record precision/recall/F1 (or your
+   objective). Include the low end — the F1 optimum is often below the
+   `τ = 0.5` point.
+5. **Pick `κ*` by the objective**, then derive the reported `τ* = σ(κ* +
+   logit(π))`.
+6. **Check the recall ceiling.** If precision ≈ 1 and recall stalls, revisit
+   blocking/candidate recall before touching `κ` again.
+7. **Report honestly.** Give the chosen `κ`/`τ`, the eval protocol, and — if a
+   probability scale is required — a `π` interval with its source. Cite the
+   P-R curve, not a single number, when the objective is close between
+   operating points.
+
+The framework's `fit_em(fixed_prior=...)` + threshold sweep is exactly step 4,
+and the match-weight threshold is the lever practitioner tooling exposes
+(Splink [19]); the `benchmark_lp_prior_sweep.py` capture-recapture band is a
+*bounding* input for step 7, not a substitute for step 4.
+
+---
+
+## 6. Worked example (from `benchmark_lp_prior_sweep.py`)
+
+On the 322k demo population the LP band put the full-file prior at
+`π ≈ 9×10⁻⁸` while the framework default is `π = 10⁻⁴`; both were scored at
+`τ = 0.5`. In `κ` terms (eq. 1), `logit(0.5) = 0`:
+
+| config | `π` | `τ` | `κ` (nats) | best F1 |
+|---|---|---|---|---|
+| default prior | 1e-4 | 0.5 | 0 + 9.21 = **9.21** | 0.9998 |
+| LP band | 9e-8 | 0.5 | 0 + 16.22 = **16.22** | 0.8302 |
+
+The two "different priors" are really two `κ` values ~7 nats (≈10 bits of
+match weight) apart — the high-`κ` config demands far stronger evidence per
+match, and that alone explains the recall drop (0.9995 → 0.71) at identical
+`τ`. Within the LP band the sweep rows were flat across priors, the signature
+of moving *along* a level set. The actionable reading: sweep `κ` directly, and
+extend below `τ = 0.5` — the grid's `τ ≥ 0.5` floor, not `π`, bounded the
+achievable F1.
+
+---
+
+## References
+
+Numbering follows the repository's **global** sequence: [1]–[20] are listed in
+[`.docs/architecture.md`](architecture.md) §9, and the new numbers continue from
+there. PDFs and study summaries are curated in `.source-papers/` with an
+availability manifest in its `README.md`.
+
+- [10] Belin, T. R., & Rubin, D. B. (1995). A method for calibrating false-match rates in record linkage. *JASA* 90(430), 694–707. [DOI 10.1080/01621459.1995.10476563](https://doi.org/10.1080/01621459.1995.10476563). Study notes: `.source-papers/10_belin_rubin_1995/`.
+- [14] Christen, P. (2012). *Data Matching: Concepts and Techniques for Record Linkage, Entity Resolution, and Duplicate Detection.* Springer. [DOI 10.1007/978-3-642-31164-2](https://doi.org/10.1007/978-3-642-31164-2). (Threshold selection and linkage quality measures; owned by the maintainer as a physical copy.)
+- [22] Ding, Y., & Fienberg, S. E. (1994). Dual system estimation of census undercount in the presence of matching error. *Survey Methodology* 20(2), 149–158. `.source-papers/22_ding_dual_system_estimation_1994.pdf`.
+- [1] Fellegi, I. P., & Sunter, A. B. (1969). A theory for record linkage. *JASA* 64(328), 1183–1210. [DOI 10.1080/01621459.1969.10501049](https://doi.org/10.1080/01621459.1969.10501049). (The decision rule with prior odds and error costs; `.source-papers/01_fellegi_sunter_1969.pdf`.)
+- [23] Gutman, R., Afendulis, C. C., & Zaslavsky, A. M. (2013). A Bayesian procedure for file linking to analyze end-of-life medical costs. *JASA* 108(501), 34–47. [PMC3640583](https://pmc.ncbi.nlm.nih.gov/articles/PMC3640583/) · `.source-papers/23_gutman_bayesian_2013.pdf`.
+- [24] Herzog, T. N., Scheuren, F. J., & Winkler, W. E. (2007). *Data Quality and Record Linkage Techniques.* Springer. [DOI 10.1007/0-387-69505-2](https://doi.org/10.1007/0-387-69505-2). (Practitioner reference on `m/u` estimation and linkage operations; owned by the maintainer as a physical copy.)
+- [25] Jansche, M. (2005). Maximum expected F-measure training of logistic regression models. *Proceedings of HLT–EMNLP 2005*, 692–699. [ACL Anthology H05-1087](https://aclanthology.org/H05-1087/).
+- [6] Jaro, M. A. (1989). Advances in record-linkage methodology as applied to matching the 1985 Census of Tampa, Florida. *JASA* 84(406), 414–420. [DOI 10.1080/01621459.1989.10478785](https://doi.org/10.1080/01621459.1989.10478785). Study summary: `.source-papers/06_jaro_1989/JaroSummary.md`. (EM estimation of `m/u` in practice; the Jaro string comparator.)
+- [26] Koyejo, O., Natarajan, N., Ravikumar, P., & Dhillon, I. S. (2014). Consistent binary classification with generalized performance metrics. *Advances in Neural Information Processing Systems 27.* [NeurIPS proceedings](https://papers.nips.cc/paper_files/paper/2014/hash/98053046e0dce5c7d946c67b96a85e18-Abstract.html).
+- [19] Linacre, R., et al. (2022). Splink: Free software for probabilistic record linkage at scale. *IJPDS* 7(3). [DOI 10.23889/ijpds.v7i3.1794](https://doi.org/10.23889/ijpds.v7i3.1794) · documentation [moj-analytical-services.github.io/splink](https://moj-analytical-services.github.io/splink/). (Practical guidance on the prior and match-weight thresholding.)
+- [28] Lipton, Z. C., Elkan, C., & Naryanaswamy, B. (2014). Thresholding classifiers to maximize F1 score. [arXiv:1402.1892](https://arxiv.org/abs/1402.1892).
+- [29] Niculescu-Mizil, A., & Caruana, R. (2005). Predicting good probabilities with supervised learning. *ICML.* [DOI 10.1145/1102351.1102430](https://doi.org/10.1145/1102351.1102430).
+- [30] Platt, J. (1999). Probabilistic outputs for support vector machines and comparisons to regularized likelihood methods. In *Advances in Large Margin Classifiers*, MIT Press. (Post-hoc probability calibration.)
+- [32] Steorts, R. C., Hall, R., & Fienberg, S. E. (2016). A Bayesian approach to graphical record linkage and deduplication. *JASA* 111(516), 1660–1672. [arXiv:1312.4645](https://arxiv.org/abs/1312.4645).
+- [33] Tancredi, A., & Liseo, B. (2011). A hierarchical Bayesian approach to record linkage and population size problems. *Annals of Applied Statistics* 5(2B), 1553–1585. [arXiv:1011.2649](https://arxiv.org/abs/1011.2649).
+- [2] Winkler, W. E. (2006). *Overview of record linkage and current research directions.* U.S. Census Bureau Research Report RRS2006/02. [Link](https://www.census.gov/library/working-papers/2006/adrm/rrs2006-02.html). (u from random pairs; m from EM; practical estimation.)
+- [20] Yancey, W. E. (2004). *Improving EM algorithm estimates for record linkage parameters.* U.S. Census Bureau Research Report RRS2004-01. [PDF](https://www.census.gov/content/dam/Census/library/working-papers/2004/adrm/rrs2004-01.pdf). (EM prior bias.)
+
+The empirical kappa-alias and threshold examples above come from
+`benchmarks/benchmark_lp_prior_sweep.py`; see
+[`.docs/user_guide.md`](user_guide.md) §6.3 for the runnable form.

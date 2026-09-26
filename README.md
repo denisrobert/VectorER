@@ -44,6 +44,11 @@ batch of candidate pairs at once, and the Fellegi-Sunter math (level assignment
 - **[`.docs/distributed_er.md`](.docs/distributed_er.md)** — multi-node
   operation: what shards/streams across machines, what stays single-process by
   design (with caveats), and how to run it (Ray cluster + external vector DB).
+- **[`.docs/calibration.md`](.docs/calibration.md)** — calibrating `π` and
+  choosing the operating point: why the prior and threshold are aliased for
+  decisions (so the match-weight threshold is what you optimize), why the
+  F1-optimal threshold is not 0.5, the other performance levers, and when a
+  genuine `π` (with an interval) is actually required.
 
 ## Contributing
 
@@ -382,3 +387,7 @@ end to end — all offline with the deterministic hashing embedder.
   distance / date-parse pass per comparison, threshold levels read cached
   score arrays), so the incremental path is sub-millisecond per query and the
   batch path scores tens of thousands of canopy pairs in pure Python + NumPy.
+
+## A note on paywalled sources
+
+As a matter of principle, I avoid referring directly or indirectly to paywalled resources. I have made exceptions in a few cases for documents which were available to me, but I don't believe that academic knowledge should be paywalled, and will always choose to avoid citing authors who choose to paywall their work when I can do so.

@@ -1007,6 +1007,15 @@ tiny set where no two records share a blocking key.)
 
 ### 6.3 Calibrating EM in practice (the operating-point sweep)
 
+> **Read first if your goal is matching performance:** [`.docs/calibration.md`](calibration.md).
+> It shows that the base prior `π` and the threshold `τ` are **aliased** for
+> decisions (`W ≥ logit(τ) − logit(π)`), so the quantity you can and should
+> optimize is the operating point on the match-weight scale — and that
+> maximizing F1 is *not* the same as thresholding the posterior at 0.5.  The
+> workflow below is the practical form of that; the note adds the derivation,
+> the metric/threshold rules, the other performance levers, and when a genuine
+> `π` is actually needed.
+
 **The problem.** EM estimates the match proportion — the FS base prior — jointly
 with the comparison-vector probabilities, and that proportion is the weak
 dimension. When the true match share is small, EM cannot reliably detect the

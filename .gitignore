@@ -21,6 +21,7 @@ docs/_build/
 # Artifacts produced by examples / demos
 examples/data/
 examples/output/
+results/
 *.faiss
 *.jsonl
 
