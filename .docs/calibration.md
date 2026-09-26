@@ -84,9 +84,11 @@ thresholds are *not* the same:
 | maximize F1 / Fβ | **generally not `p = 0.5`** |
 
 Maximizing F1 is not the same as thresholding the posterior at 0.5, and when
-positives are rare the F1-optimal threshold is typically **well below** 0.5 —
-this is a known result with plug-in/consistent algorithms (Jansche 2005;
-Lipton, Elkan & Naryanaswamy 2014; Koyejo et al. 2014). Since ER matches are
+positives are rare the F1-optimal threshold is typically **well below** 0.5.
+F1 is a *set-level* utility — it is not a sum of per-pair F1 scores — so it has
+to be optimized over the held-out pair set as a whole; for a *fixed*
+classifier there is a plug-in/consistent rule giving the F1-optimal threshold
+(Lipton, Elkan & Naryanaswamy 2014; Koyejo et al. 2014). Since ER matches are
 rare pairs, the F1-optimal operating point is very often on the low side of
 the posterior scale — which is exactly why sweeping `τ` only over
 `0.5 … 0.99` can hide the best achievable F1. Threshold selection and
@@ -116,10 +118,22 @@ levers that do:
    pair blocking never generated. If precision is ~1.0 and recall plateaus, the
    binding constraint is blocking (canopy parameters, `overlap_m`, HNSW
    `ef_search`, blocking rules), not `κ`.
-2. **`m/u` quality.** u from large random pair samples (Winkler 2006 [2];
-   Herzog, Scheuren & Winkler 2007 [24]); m from EM on match-enriched blocks
-   (Jaro 1989 [6]; Yancey 2004 [20]). Supervised `m/u` from clerically reviewed
-   pairs is the strongest option when available.
+2. **`m/u` quality — or fit the weights discriminatively.** u from large random
+   pair samples (Winkler 2006 [2]; Herzog, Scheuren & Winkler 2007 [24]); m from
+   EM on match-enriched blocks (Jaro 1989 [6]; Yancey 2004 [20]); supervised
+   `m/u` from clerically reviewed pairs is the strongest option when available.
+   Where labelled pairs exist, the score weights can instead be fit
+   **discriminatively**: a logistic regression over the same comparison-level
+   indicators, trained to maximise a smoothed expected F-measure rather than
+   the likelihood (Jansche 2005 [25]). This is the FS score form in disguise —
+   per-level coefficients ↔ `log(m/u)` and the intercept ↔ `logit(π)` — so it
+   drops into the existing scorer, and the framework already builds the needed
+   indicator matrix (`_assign_levels` inside `calibrate_from_pairs` / `fit_em`).
+   Prefer it when conditionally dependent comparisons bias the generative `m/u`
+   (the §7 caveat) or when the metric itself is the training objective; it
+   costs you the interpretability of `m/u` and `π`, and it still needs labels.
+   `m/u` are not the only way to obtain the weights — they are the generative
+   way.
 3. **Comparison levels and thresholds.** The level boundaries set `W`'s
    resolution; poor boundaries cap achievable separation regardless of `κ`.
 4. **Term-frequency / population adjustments** (`base_records`, TF weight
@@ -231,7 +245,7 @@ availability manifest in its `README.md`.
 - [1] Fellegi, I. P., & Sunter, A. B. (1969). A theory for record linkage. *JASA* 64(328), 1183–1210. [DOI 10.1080/01621459.1969.10501049](https://doi.org/10.1080/01621459.1969.10501049). (The decision rule with prior odds and error costs; `.source-papers/01_fellegi_sunter_1969.pdf`.)
 - [23] Gutman, R., Afendulis, C. C., & Zaslavsky, A. M. (2013). A Bayesian procedure for file linking to analyze end-of-life medical costs. *JASA* 108(501), 34–47. [PMC3640583](https://pmc.ncbi.nlm.nih.gov/articles/PMC3640583/) · `.source-papers/23_gutman_bayesian_2013.pdf`.
 - [24] Herzog, T. N., Scheuren, F. J., & Winkler, W. E. (2007). *Data Quality and Record Linkage Techniques.* Springer. [DOI 10.1007/0-387-69505-2](https://doi.org/10.1007/0-387-69505-2). (Practitioner reference on `m/u` estimation and linkage operations; owned by the maintainer as a physical copy.)
-- [25] Jansche, M. (2005). Maximum expected F-measure training of logistic regression models. *Proceedings of HLT–EMNLP 2005*, 692–699. [ACL Anthology H05-1087](https://aclanthology.org/H05-1087/).
+- [25] Jansche, M. (2005). Maximum expected F-measure training of logistic regression models. *Proceedings of HLT–EMNLP 2005*, 692–699. [ACL Anthology H05-1087](https://aclanthology.org/H05-1087/). (Discriminative, metric-driven training of a logistic classifier; used here as the alternative to generative `m/u` estimation over the FS comparison-level indicators.)
 - [6] Jaro, M. A. (1989). Advances in record-linkage methodology as applied to matching the 1985 Census of Tampa, Florida. *JASA* 84(406), 414–420. [DOI 10.1080/01621459.1989.10478785](https://doi.org/10.1080/01621459.1989.10478785). Study summary: `.source-papers/06_jaro_1989/JaroSummary.md`. (EM estimation of `m/u` in practice; the Jaro string comparator.)
 - [26] Koyejo, O., Natarajan, N., Ravikumar, P., & Dhillon, I. S. (2014). Consistent binary classification with generalized performance metrics. *Advances in Neural Information Processing Systems 27.* [NeurIPS proceedings](https://papers.nips.cc/paper_files/paper/2014/hash/98053046e0dce5c7d946c67b96a85e18-Abstract.html).
 - [19] Linacre, R., et al. (2022). Splink: Free software for probabilistic record linkage at scale. *IJPDS* 7(3). [DOI 10.23889/ijpds.v7i3.1794](https://doi.org/10.23889/ijpds.v7i3.1794) · documentation [moj-analytical-services.github.io/splink](https://moj-analytical-services.github.io/splink/). (Practical guidance on the prior and match-weight thresholding.)
