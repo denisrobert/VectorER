@@ -46,6 +46,17 @@ Independence is what makes the overlap informative; with a single model or
 nested thresholds the tallies are correlated and the prior is biased upward.
 A small overlap (``m < 7``) triggers the estimator's warning -- the band is
 too wide to trust.
+
+Operating point (``--eval-mode``):
+
+* ``curve`` (default) -- build the **exact** P/R/F1 curve of a *fixed* scorer
+  over the single threshold axis (the alias ``kappa = logit(tau) - logit(pi)``):
+  one fit, one scoring pass, no ``tau``/``pi`` grid and no refitting.  The
+  curve is a finite **step function** whose breakpoints are the distinct scores
+  attained on the labelled pairs, so the reported F1 optimum is exact.
+* ``grid`` -- the ``fixed_prior x tau`` prior-band sweep (per-point EM refit),
+  kept for comparison; it explores *model* variation rather than a single
+  curve.
 """
 
 from __future__ import annotations
@@ -158,7 +169,12 @@ def main() -> None:
                         help="two-sided coverage of the capture-recapture interval")
     parser.add_argument("--sweep-points", type=int, default=3,
                         help="prior grid points spread log-linearly inside the LP interval "
-                             "(in addition to the point estimate)")
+                             "(in addition to the point estimate; grid mode only)")
+    parser.add_argument("--eval-mode", choices=["curve", "grid"], default="curve",
+                        help="operating-point selection: 'curve' (default) builds the "
+                             "exact P/R/F1 curve of a fixed scorer over the single "
+                             "threshold axis (no tau/pi grid, no refitting); 'grid' "
+                             "keeps the fixed_prior x tau prior-band sweep")
     parser.add_argument("--prior-sweep-taus", default="0.5,0.7,0.85,0.9,0.99",
                         help="comma-separated tau grid for the prior sweep")
     parser.add_argument("--em-max-pairs", type=float, default=1e6)
@@ -303,18 +319,12 @@ def main() -> None:
     lefts = [records[a] for a, b, _ in gt_pairs] + [a for a, _ in neg_pairs]
     rights = [records[b] for a, b, _ in gt_pairs] + [b for _, b in neg_pairs]
     y = np.asarray([m for _, _, m in gt_pairs] + [0] * len(neg_pairs), dtype=int)
-
-    # --- sweep fixed_prior across the band --------------------------------
-    print(f"Sweeping {len(grid)} priors x {len(taus)} taus inside the LP band ...")
-    sweep = prior_sweep(
-        records, gt_pairs, grid, taus, seed=args.seed,
-        em_max_pairs=args.em_max_pairs, neg_pairs=neg_pairs,
-        enrich_keep_frac=args.enrich_keep_frac,
+    labelled = (
+        [(records[a], records[b], 1) for a, b, _ in gt_pairs]
+        + [(left, right, 0) for left, right in neg_pairs]
     )
-    for r in sweep["prior_sweep_rows"]:
-        r["f1"] = round(_f1(r["precision"], r["recall"]), 4)
 
-    # --- baselines ---------------------------------------------------------
+    # --- fixed scorers (built once; the curve mode never refits) -----------
     em_scorer = em_train(
         records, comparisons_for(
             ["first_name", "last_name", "date_of_birth", "email", "address"]
@@ -328,27 +338,71 @@ def main() -> None:
         comparisons_for(["first_name", "last_name", "date_of_birth", "email", "address"]),
         prior=DEFAULT_PRIOR,
     )
-    em_rows = _score_rows(em_scorer, lefts, rights, y, taus)
-    default_rows = _score_rows(default_scorer, lefts, rights, y, taus)
 
-    best_lp = _best_row(sweep["prior_sweep_rows"])
-    best_em = _best_row(em_rows)
-    best_default = _best_row(default_rows)
+    def _op_dict(op, scorer) -> dict:
+        return {
+            "tau": op.threshold,
+            "match_weight_bits": round(op.match_weight_bits(), 4),
+            "kappa_pi_free_nats": round(op.pi_free_weight(scorer.prior), 4),
+            "precision": round(op.precision, 4),
+            "recall": round(op.recall, 4),
+            "f1": round(op.f1, 4),
+            "prior": scorer.prior,
+        }
 
-    print("\nLP-band sweep rows (best by F1):")
-    for r in sorted(sweep["prior_sweep_rows"], key=lambda r: -r["f1"]):
-        print(f"  prior={r['fixed_prior']:g} tau={r['tau']} "
-              f"precision={r['precision']} recall={r['recall']} f1={r['f1']}")
-    print(f"\nbest F1 in LP band:      prior={best_lp['fixed_prior']:g} "
-          f"tau={best_lp['tau']} f1={best_lp['f1']}")
-    print(f"best F1 EM-learned prior: tau={best_em['tau']} f1={best_em['f1']} "
-          f"(learned prior={em_scorer.prior:.3g})")
-    print(f"best F1 default prior:    tau={best_default['tau']} f1={best_default['f1']} "
-          f"(prior={default_scorer.prior:.3g})")
+    sweep = None
+    em_curve = default_curve = None
+    if args.eval_mode == "curve":
+        from vectorer.scoring import match_weight_curve
+
+        print("\nExact match-weight curve of the fixed scorers "
+              "(single threshold axis; no tau/pi grid):")
+        em_curve = match_weight_curve(em_scorer, labelled)
+        default_curve = match_weight_curve(default_scorer, labelled)
+        for name, curve, scorer in (
+            ("EM-learned prior", em_curve, em_scorer),
+            ("default prior", default_curve, default_scorer),
+        ):
+            b = curve.best_f1
+            print(f"  {name}: best F1={b.f1:.4f} precision={b.precision:.4f} "
+                  f"recall={b.recall:.4f}  tau={b.threshold:.4g}  "
+                  f"total-W={b.match_weight_bits():.2f} bits  "
+                  f"kappa(pi-free)={b.pi_free_weight(scorer.prior):.2f} nats  "
+                  f"(pi={scorer.prior:.3g})")
+        print(f"  EM curve: {len(em_curve.points)} breakpoints over "
+              f"{em_curve.n_pairs} eval pairs")
+        best_lp = _op_dict(em_curve.best_f1, em_scorer)
+        best_em = _op_dict(em_curve.best_f1, em_scorer)
+        best_default = _op_dict(default_curve.best_f1, default_scorer)
+    else:
+        print(f"Sweeping {len(grid)} priors x {len(taus)} taus inside the LP band ...")
+        sweep = prior_sweep(
+            records, gt_pairs, grid, taus, seed=args.seed,
+            em_max_pairs=args.em_max_pairs, neg_pairs=neg_pairs,
+            enrich_keep_frac=args.enrich_keep_frac,
+        )
+        for r in sweep["prior_sweep_rows"]:
+            r["f1"] = round(_f1(r["precision"], r["recall"]), 4)
+        em_rows = _score_rows(em_scorer, lefts, rights, y, taus)
+        default_rows = _score_rows(default_scorer, lefts, rights, y, taus)
+        best_lp = _best_row(sweep["prior_sweep_rows"])
+        best_em = _best_row(em_rows)
+        best_default = _best_row(default_rows)
+        print("\nLP-band sweep rows (best by F1):")
+        for r in sorted(sweep["prior_sweep_rows"], key=lambda r: -r["f1"]):
+            print(f"  prior={r['fixed_prior']:g} tau={r['tau']} "
+                  f"precision={r['precision']} recall={r['recall']} f1={r['f1']}")
+        print(f"\nbest F1 in LP band:      prior={best_lp['fixed_prior']:g} "
+              f"tau={best_lp['tau']} f1={best_lp['f1']}")
+        print(f"best F1 EM-learned prior: tau={best_em['tau']} f1={best_em['f1']} "
+              f"(learned prior={em_scorer.prior:.3g})")
+        print(f"best F1 default prior:    tau={best_default['tau']} f1={best_default['f1']} "
+              f"(prior={default_scorer.prior:.3g})")
 
     results = {
         "parameters": {
             "mode": "lp_prior_sweep",
+            "eval_mode": args.eval_mode,
             "data_file": args.data_file,
             "gt_file": args.gt_file,
             "arena_mode": args.arena_mode,
@@ -379,7 +433,18 @@ def main() -> None:
             "prior_full_ci": [prior_ci[0], prior_ci[1]],
             "standard_error": round(est.standard_error, 2),
         },
-        "prior_sweep_rows": sweep["prior_sweep_rows"],
+        "prior_sweep_rows": sweep["prior_sweep_rows"] if sweep is not None else [],
+        "curve": (
+            {
+                "breakpoints": len(em_curve.points),
+                "n_pairs": em_curve.n_pairs,
+                "n_positive": em_curve.n_positive,
+                "em_learned_prior": _op_dict(em_curve.best_f1, em_scorer),
+                "default_prior": _op_dict(default_curve.best_f1, default_scorer),
+            }
+            if em_curve is not None
+            else None
+        ),
         "best": {
             "lp_band": best_lp,
             "em_learned_prior": best_em,

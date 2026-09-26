@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`match_weight_curve` — exact fixed-scorer P/R curve (one pass, no grid)** —
+  `vectorer.match_weight_curve(scorer, labelled_pairs)` (with
+  `MatchWeightCurve` / `OperatingPoint`, exported from `vectorer.scoring` and
+  top-level `vectorer`) builds the **exact** precision/recall/F1 curve of a
+  fixed scorer over the single threshold axis of the `π`/`τ` alias.  The score
+  is a function of the comparison-level pattern and so takes finitely many
+  values, so the curve is a step function whose breakpoints are the distinct
+  attained scores: one `O(n log n)` pass, no `τ`/`π` grid and no refitting,
+  with the F1 (and precision/recall) optima read off directly.
+  `OperatingPoint.match_weight_bits()` / `.pi_free_weight(prior)` give the
+  equivalent match-weight and `κ` thresholds.
+  `benchmarks/benchmark_lp_prior_sweep.py` gained `--eval-mode {curve,grid}`
+  (default `curve`, which uses it; `grid` keeps the prior-band sweep).
+  Documented in `.docs/calibration.md` §2.1.
+
 - **`.docs/calibration.md` — calibrating `π` and choosing the operating
   point** — the identifiability note the prior work implied: `π` and the
   threshold `τ` are aliased for decisions (`W ≥ logit(τ) − logit(π) =: κ`), so

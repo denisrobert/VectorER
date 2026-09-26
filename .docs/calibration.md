@@ -107,6 +107,40 @@ report, for your chosen `π` convention:
 Because of (3), reporting a `(π, τ)` pair without the `κ` is under-determined
 for reproducibility: state `κ` (or state both).
 
+### 2.1 The exact curve: one pass, no grid
+
+Because the operating point is a single scalar, the whole P-R curve of a
+**fixed** scorer can be computed exactly in one pass — no `(π, τ)` grid and no
+refitting:
+
+```python
+from vectorer import match_weight_curve
+
+labelled = [(left_record, right_record, label), ...]   # label truthy = true match
+curve = match_weight_curve(scorer, labelled)
+best = curve.best_f1                                   # exact F1 optimum
+print(best.f1, best.threshold)                         # posterior threshold tau
+print(best.match_weight_bits())                        # total match weight (bits, incl. prior)
+print(best.pi_free_weight(scorer.prior))               # this note's kappa = logit(tau) - logit(pi)
+```
+
+The score is a function of the comparison-level pattern and so takes **finitely
+many values** on any labelled set; the curve is therefore an exact **step
+function** whose breakpoints are the distinct scores attained.  `curve.points`
+holds every attainable operating point (ordered by descending threshold, one
+per breakpoint plus the accept-nothing endpoint), so optimising is a *sort*,
+not a search — `O(n log n)` — and the best point under any of F1 / precision /
+recall is read off directly (`curve.best_for("recall")`, etc.).  This is the
+concrete form of the sweep in step 4 below, and it is what
+`benchmarks/benchmark_lp_prior_sweep.py --eval-mode curve` (the default) uses;
+`--eval-mode grid` keeps the older `fixed_prior × τ` sweep for comparison.
+
+Note the distinction: this is a 1-D sweep of **one** curve, which requires
+**fixed `m/u`**.  Sweeping `(π, τ)` with an EM refit per point explores a
+*family* of curves (changing `π` changes the model), so it is not the same
+thing — settle the weights first, then select the operating point on the exact
+curve.
+
 ---
 
 ## 3. `κ` is not the only lever — and often not the binding one
@@ -132,8 +166,16 @@ levers that do:
    Prefer it when conditionally dependent comparisons bias the generative `m/u`
    (the §7 caveat) or when the metric itself is the training objective; it
    costs you the interpretability of `m/u` and `π`, and it still needs labels.
-   `m/u` are not the only way to obtain the weights — they are the generative
-   way.
+   Crucially, the recall/precision balance is set by the training objective
+   (`β`), so it shapes the fitted **weights**, not merely the threshold: a
+   fixed score can only be moved *along* its P-R curve by `κ`, whereas
+   metric-driven training can reshape the curve. That is the concrete way this
+   route can beat generative `m/u` even with labels — and only under
+   misspecification or limited data, since a correctly specified model's
+   F-optimal rule is itself just a threshold. The price is that the preference
+   is baked into the model, so changing the operating point means retraining,
+   where FS keeps `π`/weights and the `κ` threshold separable. `m/u` are not the
+   only way to obtain the weights — they are the generative way.
 3. **Comparison levels and thresholds.** The level boundaries set `W`'s
    resolution; poor boundaries cap achievable separation regardless of `κ`.
 4. **Term-frequency / population adjustments** (`base_records`, TF weight
@@ -191,11 +233,15 @@ convention you chose.
    match-enriched blocks; supervised m/u if clerically-reviewed pairs exist.
    **Freeze `π`** (any convention, e.g. `1e-4`) so `(π, τ)` stays on a known
    level set.
-4. **Sweep `κ`, not `τ`.** Score the eval pairs to match weights `W`, then scan
-   a wide threshold range on `W` and record precision/recall/F1 (or your
-   objective). Include the low end — the F1 optimum is often below the
+4. **Sweep `κ`, not `τ` — or, better, read the exact curve.** With `m/u`
+   frozen, build the full P-R/F1 curve of the fixed scorer in one pass with
+   `match_weight_curve(scorer, labelled)` (§2.1): its `points` are every
+   attainable operating point, so no grid is needed. If you prefer the explicit
+   sweep, scan `κ` (the match-weight threshold) rather than `τ` over a narrow
+   high range, and include the low end — the F1 optimum is often below the
    `τ = 0.5` point.
-5. **Pick `κ*` by the objective**, then derive the reported `τ* = σ(κ* +
+5. **Pick `κ*` by the objective** (`curve.best_for("f1")`, or a
+   precision-constrained point), then derive the reported `τ* = σ(κ* +
    logit(π))`.
 6. **Check the recall ceiling.** If precision ≈ 1 and recall stalls, revisit
    blocking/candidate recall before touching `κ` again.

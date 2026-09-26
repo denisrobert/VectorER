@@ -62,9 +62,12 @@ from .scoring import (
     DEFAULT_PRIOR,
     DEFAULT_THRESHOLD,
     FellegiSunterScorer,
+    MatchWeightCurve,
+    OperatingPoint,
     WeightTable,
     estimate_prior_capture_recapture,
     import_splink_scorer,
+    match_weight_curve,
 )
 from .classification import (
     Classifier,
@@ -157,6 +160,9 @@ __all__ = [
     "DEFAULT_THRESHOLD",
     "estimate_prior_capture_recapture",
     "CaptureRecapturePrior",
+    "match_weight_curve",
+    "MatchWeightCurve",
+    "OperatingPoint",
     # classification
     "Decision",
     "Classifier",
