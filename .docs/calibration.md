@@ -183,6 +183,16 @@ levers that do:
 5. **Dedup clustering stage.** In batch dedup, `τ` gates the edges that the
    Swoosh closure merges; the merge function (union vs representative) and
    closure semantics affect cluster-level P/R beyond pair-level `κ`.
+6. **Block-level heterogeneity (do *not* use per-block `κ`).** Blocks differ in
+   match prevalence, but deployment applies **one** threshold, so the target is
+   a single `κ` optimized on the **pooled** candidate pairs (pooling already
+   weights blocks by their pair counts and prevalences). Averaging per-block
+   optima is invalid — thresholds are not additive, and the mean is not the
+   pooled optimum. If the block key genuinely carries prior information (rare-
+   name blocks have higher match rates), **fold it into the score** as an extra
+   comparison so `m/u` give it an additive log-Bayes-factor (a per-block prior
+   offset inside `W`); then one global `κ` is again optimal. Per-block metrics
+   are diagnostic, not a basis for thresholding.
 
 Diagnose in this order: (a) candidate recall (can the true pairs even be
 scored?), (b) separability (`m/u` — is the P-R curve good at *its* best
@@ -225,10 +235,24 @@ convention you chose.
    subject to precision ≥ 0.99", or a cost ratio. F1 weights precision and
    recall equally; if your costs are asymmetric, use (2)/P-R-with-constraint
    instead. Write it down before tuning.
-2. **Build a held-out labelled eval set.** Positives from a known registry /
-   audited sample; negatives that are *genuine* non-matches (not random pairs
-   from a near-duplicate-bearing population). Tune and report on held-out data
-   only.
+2. **Build a held-out labelled eval set — from the deployment decision domain.**
+   Positives from a known registry / audited sample; negatives that are *genuine*
+   non-matches.  Sample it **uniformly from the same pair domain the threshold
+   governs** and with matching class prevalence: if the scorer only ever sees
+   blocked candidates (the usual batch-ER case), sample the *candidate* pairs —
+   not the enriched training blocks, and not the full pair space (whose ≈10⁻⁷
+   match density is both the wrong prevalence and far too rare to label).  The
+   F1-optimal `κ` depends on the positive rate, so a set from a different domain
+   yields the wrong operating point unless it is **reweighted**.  Blocking
+   **recall** is a separate quantity — a candidate-domain sample cannot see the
+   pairs blocking never generated — so estimate it separately (the `recall`
+   factor) rather than by widening the eval set.  Sample **pairs uniformly**
+   within the chosen domain, not whole blocks: a block that contains no
+   positives simply contributes negatives — usually the *hard* look-alike
+   negatives that set `κ` — so dropping such blocks would bias `κ` permissive.
+   (If you must sample block-wise, weight by block size so the pooled
+   prevalence is preserved, and compute precision/recall **pooled**, never per
+   block.)  Tune and report on held-out data only.
 3. **Fit `m/u` well.** u from a large random pair sample; m from EM on
    match-enriched blocks; supervised m/u if clerically-reviewed pairs exist.
    **Freeze `π`** (any convention, e.g. `1e-4`) so `(π, τ)` stays on a known
