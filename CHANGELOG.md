@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`calibration.md` §3.2 — the calibrated F1-threshold shortcut `τ* = F1*/2`** —
+  documents Lipton, Elkan & Naryanaswamy (2014) Corollary 1: when the score is
+  a well-calibrated match probability, the F1-optimal threshold is **half the
+  maximum achievable F1**, hence strictly below 0.5 — the precise reason not to
+  hold `τ` high (0.9/0.99).  Includes the match-weight form
+  `κ* = logit(F1*/2) − logit(π)`, the precondition (a *calibrated* posterior;
+  otherwise use Theorem 1 or the exact curve of §3.1), and a pointer to §4.1.
+- **`calibration.md` §4.1 — post-hoc calibration in practice** — how to turn a
+  mis-calibrated FS posterior into a calibrated one in this framework: the
+  intercept/prior calibration on a labelled sample via
+  `to_settings()`/`from_settings` (calibration-in-the-large, with a runnable
+  snippet), the slope/confidence correction (Platt/isotonic, applied post-hoc,
+  and why a slope ≠ 1 means re-fitting `m/u`), the intercept-vs-slope
+  distinction (a shift is absorbed by `κ`; only the slope reshapes the P-R
+  curve), the reliability-diagram check, and the note that the framework has no
+  built-in calibrator.  Adds the two caveats that matter: a **correctly
+  specified** FS is a calibrated logistic regression, so there is nothing to fix
+  (and, per Niculescu-Mizil & Caruana, calibrating an already-calibrated model
+  can *hurt*); and monotone recalibration **cannot fix ranking** —
+  dependence-induced reordering is a discrimination loss, so model the
+  dependence (`group_comparison`) before recalibrating the scale.  Makes the
+  Platt / Niculescu-Mizil & Caruana [29] citation concrete.
+
 ## [0.7.0] - 2026-09-27
 
 ### Added

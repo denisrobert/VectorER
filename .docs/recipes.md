@@ -419,7 +419,7 @@ scorer = FellegiSunterScorer.from_comparisons(comparisons).fit_em(
 
 **Step 4 — confirm it helped.**  Compare the exact P-R curve / best F1 of the
 marginal comparison set against the composite on held-out labelled pairs
-(`match_weight_curve`, calibration note §2.1); the composite should recover
+(`match_weight_curve`, calibration note §3.1); the composite should recover
 recall on the “both-wrong” duplicates.
 
 **Caveats.** (1) The cell count is the product of the members’ level counts —
@@ -430,5 +430,5 @@ independence is still assumed between the composite and the other comparisons
 interpretable.  (4) `combine` is a Python callable, so the composite is **not
 JSON-declarable** (same caveat as `custom_comparison` test callables); it is
 built programmatically and round-trips through EM calibration in-process.  See
-[`.docs/calibration.md`](calibration.md) §3 item 7 for the underlying mechanics.
+[`.docs/calibration.md`](calibration.md) §5 item 7 for the underlying mechanics.
 

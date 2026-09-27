@@ -1,20 +1,35 @@
-# Calibrating π and choosing the operating point
+# Calibrating Fellegi-Sunter models: a guide
 
-This note explains what the Fellegi-Sunter base prior `π` is actually
-identifiable from, why "calibrating π" is usually the wrong question for
-matching performance, and the workflow that gives you the best achievable
-combination of F1 / precision / recall.
+The practical companion to the model documentation. It answers three questions
+in order — **what can be calibrated**, **how to do it**, and **what to do if the
+result isn't good enough** — for a Fellegi-Sunter (FS) scorer with per-level
+`m/u`, base rate `π`, match weight `W`, and posterior threshold `τ`.
 
-If you only read one paragraph: **for decisions, `π` and the threshold `τ` are
-aliased into a single degree of freedom.** The quantity you can refine — and
-should optimize — is the *operating point* on the match-weight scale,
-`κ = logit(τ) − logit(π)`. `π` matters separately only when you need a
-probability readout or expected counts, and then it should be reported as an
-interval.
+## 0. Overview: what "calibration" means here
 
----
+"Calibration" names three different jobs, and most confusion comes from blurring
+them:
 
-## 1. The alias: `π` and `τ` are one parameter
+1. **The weights** (`m/u`, hence the score `W`) — the *discrimination* lever.
+   This is where EM, supervised fitting, or a discriminative fit act. No
+   threshold on a bad score fixes it.
+2. **The operating point** (`κ`) — the *threshold*. Choosing it well is what you
+   usually want, and it needs a labelled, prevalence-matched eval set.
+3. **The probability scale** (`π`, or a post-hoc map) — only if you need to
+   *read* a probability or an expected count, not to decide.
+
+If you read one paragraph: **for decisions, `π` and `τ` are aliased into a
+single degree of freedom, `κ = logit(τ) − logit(π)`.** Refine `κ`; keep `π` only
+so a probability has a meaning, and report it as an interval. Everything below
+unpacks that.
+
+**How to read this guide.** §1 gives the one concept the rest rests on. §2 is
+the ordered procedure (the spine) — start there. §§3–6 expand the steps it
+invokes: choosing the operating point, calibrating a probability scale, the
+levers to pull when the result is not good enough, and estimating `π` honestly.
+§7 is a worked example.
+
+## 1. What is identifiable: `π` and `τ` are one parameter (`κ`)
 
 The match weight (log Bayes factor) of the Fellegi–Sunter model [1] is
 
@@ -68,9 +83,70 @@ sets warp). Freezing the prior (`fixed_prior`) makes (1) exact.
 - Keep a `π` convention only so `τ` has a meaning; it is a coordinate choice,
   not a calibration.
 
----
+## 2. The procedure (ordered workflow)
 
-## 2. What to optimize: the metric decides the threshold
+Work through these in order; the sections named expand each step.
+
+1. **Define the objective quantitatively.** "Maximise F1", or "maximise recall
+   subject to precision ≥ 0.99", or a cost ratio. F1 weights precision and
+   recall equally; if your costs are asymmetric, use (2)/P-R-with-constraint
+   instead. Write it down before tuning.
+2. **Build a held-out labelled eval set — from the deployment decision domain.**
+   Positives from a known registry / audited sample; negatives that are *genuine*
+   non-matches.  Sample it **uniformly from the same pair domain the threshold
+   governs** and with matching class prevalence: if the scorer only ever sees
+   blocked candidates (the usual batch-ER case), sample the *candidate* pairs —
+   not the enriched training blocks, and not the full pair space (whose ≈10⁻⁷
+   match density is both the wrong prevalence and far too rare to label).  The
+   F1-optimal `κ` depends on the positive rate, so a set from a different domain
+   yields the wrong operating point unless it is **reweighted**.  Blocking
+   **recall** is a separate quantity — a candidate-domain sample cannot see the
+   pairs blocking never generated — so estimate it separately (the `recall`
+   factor) rather than by widening the eval set.  Sample **pairs uniformly**
+   within the chosen domain, not whole blocks: a block that contains no
+   positives simply contributes negatives — usually the *hard* look-alike
+   negatives that set `κ` — so dropping such blocks would bias `κ` permissive.
+   (If you must sample block-wise, weight by block size so the pooled
+   prevalence is preserved, and compute precision/recall **pooled**, never per
+   block.)  Tune and report on held-out data only.
+3. **Fit `m/u` well.** u from a large random pair sample; m from EM on
+   match-enriched blocks; supervised m/u if clerically-reviewed pairs exist.
+   **Freeze `π`** (any convention, e.g. `1e-4`) so `(π, τ)` stays on a known
+   level set.  (This is the *discrimination* lever — §5.)
+4. **Fit and calibrate on *disjoint* data (or cross-fit).** The optimal `κ` is a
+   function of the model, so choosing it on the pairs that fitted the weights
+   overfits the score distribution — Koyejo's two-step estimator (Alg 1) fits
+   `η̂` on one split `S1` and picks the threshold on a disjoint `S2`, which is
+   what its consistency guarantee rests on.  Weights fitted **supervised**
+   (`calibrate_from_pairs`, or the discriminative `β`-training of §5 item 2)
+   must not share labelled pairs with the `κ`-calibration set; pure EM sees no
+   labels, so that leak is absent there, but a clean split still keeps the
+   calibration set a genuine holdout.  Prefer **k-fold cross-fitting** to a
+   single split: fit on `K−1` folds, tune `κ` on the held-out fold's scores,
+   rotate, aggregate — no leakage, and all data used for both stages.
+5. **Sweep `κ`, not `τ` — or, better, read the exact curve.** With `m/u`
+   frozen, build the full P-R/F1 curve of the fixed scorer in one pass with
+   `match_weight_curve(scorer, labelled)` (§3.1): its `points` are every
+   attainable operating point, so no grid is needed. If you prefer the explicit
+   sweep, scan `κ` (the match-weight threshold) rather than `τ` over a narrow
+   high range, and include the low end — the F1 optimum is often below the
+   `τ = 0.5` point.
+6. **Pick `κ*` by the objective** (`curve.best_for("f1")`, or a
+   precision-constrained point), then derive the reported `τ* = σ(κ* +
+   logit(π))`.  If a *probability* is needed, calibrate the scale (§4).
+7. **Check the recall ceiling.** If precision ≈ 1 and recall stalls, revisit
+   blocking/candidate recall before touching `κ` again (§5 item 1).
+8. **Report honestly.** Give the chosen `κ`/`τ`, the eval protocol, and — if a
+   probability scale is required — a `π` interval with its source (§6). Cite the
+   P-R curve, not a single number, when the objective is close between
+   operating points.
+
+The framework's `fit_em(fixed_prior=...)` + threshold sweep is exactly step 5,
+and the match-weight threshold is the lever practitioner tooling exposes
+(Splink [19]); the `benchmark_lp_prior_sweep.py` capture-recapture band is a
+*bounding* input for step 8, not a substitute for step 5.
+
+## 3. Choosing the operating point
 
 For a fixed `m/u` (hence fixed `W`), matching performance is a function of `κ`
 alone. Which `κ` is best depends entirely on the objective — and the required
@@ -84,7 +160,8 @@ thresholds are *not* the same:
 | maximize F1 / Fβ | **generally not `p = 0.5`** |
 
 Maximizing F1 is not the same as thresholding the posterior at 0.5, and when
-positives are rare the F1-optimal threshold is typically **well below** 0.5.
+positives are rare the F1-optimal threshold is typically **well below** 0.5
+(for a *calibrated* posterior it is exactly `F1*/2` — §3.2).
 F1 is a *set-level* utility — it is not a sum of per-pair F1 scores — so it has
 to be optimized over the held-out pair set as a whole; for a *fixed*
 classifier there is a plug-in/consistent rule giving the F1-optimal threshold
@@ -107,7 +184,7 @@ report, for your chosen `π` convention:
 Because of (3), reporting a `(π, τ)` pair without the `κ` is under-determined
 for reproducibility: state `κ` (or state both).
 
-### 2.1 The exact curve: one pass, no grid
+### 3.1 The exact curve: one pass, no grid
 
 Because the operating point is a single scalar, the whole P-R curve of a
 **fixed** scorer can be computed exactly in one pass — no `(π, τ)` grid and no
@@ -131,7 +208,7 @@ holds every attainable operating point (ordered by descending threshold, one
 per breakpoint plus the accept-nothing endpoint), so optimising is a *sort*,
 not a search — `O(n log n)` — and the best point under any of F1 / precision /
 recall is read off directly (`curve.best_for("recall")`, etc.).  This is the
-concrete form of the sweep in step 5 below, and it is what
+concrete form of step 5 of the procedure (§2), and it is what
 `benchmarks/benchmark_lp_prior_sweep.py --eval-mode curve` (the default) uses;
 `--eval-mode grid` keeps the older `fixed_prior × τ` sweep for comparison.
 
@@ -141,9 +218,149 @@ Note the distinction: this is a 1-D sweep of **one** curve, which requires
 thing — settle the weights first, then select the operating point on the exact
 curve.
 
----
+### 3.2 The calibrated shortcut: `τ* = F1*/2` (look *below* 0.5)
 
-## 3. `κ` is not the only lever — and often not the binding one
+When the score is a **well-calibrated** match probability — the FS posterior
+with correct `m/u`/`π`, or a posterior post-hoc calibrated on a labelled sample
+(§4.1) — the F1-optimal threshold has a closed form (Lipton, Elkan &
+Naryanaswamy 2014 [28], Corollary 1): the F1-maximising rule accepts iff
+
+```
+p(match | γ) ≥ F1*/2
+```
+
+where `F1*` is the **best achievable** F1.  So the optimal posterior threshold
+is **half the maximum F1** — and since `F1* < 1` for any real classifier, it is
+**strictly below 0.5**.
+
+That is the precise reason the F1-optimal threshold is not 0.5, and it runs
+against the natural instinct to hold `τ` high (0.9, 0.99) for "confidence".
+A high `τ` buys precision at a steep recall cost, which on rare-match data is
+exactly the wrong trade for F1: a best F1 of 0.82 puts the optimum at 0.41;
+0.60 at 0.30.  **Look below 0.5.**
+
+In match-weight coordinates (`κ = logit(τ) − logit(π)`):
+
+```
+κ* = logit(F1*/2) − logit(π)
+```
+
+**Precondition — it needs calibration.**  Theorem 1 is the general rule for any
+real-valued score; Corollary 1 uses `s = p(t=1|s)`, so the closed form holds
+only for a *calibrated probability*.  Misestimated `m/u` (conditional
+dependence — §5 item 7), a biased EM prior, or discriminatively-fit weights that
+aren't probability-calibrated break the hypothesis and `F1*/2` need not hold —
+then use Theorem 1 or the exact curve (§3.1).  The corollary is also
+self-referential (`F1*` is the F1 *at* the optimal rule), so in practice you read
+it off the curve or solve the fixed point `τ = F1(τ)/2`.
+
+The payoff: calibrating the posterior (correct `m/u`, or post-hoc calibration —
+§4.1) turns operating-point selection into the closed form `τ* = F1*/2` instead
+of a wide sweep, and tells you up front that the answer is below 0.5.
+
+## 4. The probability scale: post-hoc calibration (only when you need `p`)
+
+For decisions you never need a calibrated probability — only `κ` (§3).  You need
+a genuine `p` when you want a **probability readout** ("this pair has a 0.98
+chance of being a match"), **expected counts** ("about N true matches in this
+file"), or **portability** across datasets/blocks where the pair density
+differs.  With a *well-specified* FS posterior those come for free; when the
+posterior can't be trusted, post-hoc calibration is the route to a calibrated
+`p`, and hence to the `τ* = F1*/2` shortcut above.  It means fitting a monotone
+map from the scorer's score to the observed match frequency on a labelled
+sample (Platt 1999; Niculescu-Mizil & Caruana 2005 [29]).
+
+**Precondition — when it helps, and when it hurts.**  A **correctly specified**
+FS is a logistic regression under conditional independence, and a logistic
+regression fit by MLE is calibrated (asymptotically, under correct
+specification): the map is then the identity (`a ≈ 1, b ≈ 0`) and post-hoc
+calibration is a no-op.  Worse, applying it anyway can *degrade* the
+probabilities — Niculescu-Mizil & Caruana find that for well-calibrated models
+(they list **logistic regression** explicitly) neither Platt nor isotonic
+improves things, and with a small calibration set "calibration is not
+beneficial, and actually hurts performance."  So do **not** calibrate on
+principle: check a reliability diagram first, and calibrate only what is
+demonstrably off.  It earns its place for a **base-rate/intercept** error
+(a biased `π`) and for mild monotone distortions — not as a default step.
+
+### 4.1 Post-hoc calibration in practice
+
+**What the map's two parts fix.**  Write the FS posterior `p = σ(W + logit π)`
+and a general Platt recalibration `s ↦ σ(a·logit s + b)`:
+
+- the **intercept `b`** is a *prior shift* — algebraically a change of `π`.  It
+  is redundant for *decisions* (the `κ` threshold absorbs it), but essential for
+  a **probability readout** and for `τ* = F1*/2`.
+- the **slope `a`** is a *confidence/scale* correction — `a < 1` tempers an
+  over-confident score, the usual case under conditional dependence.  It is the
+  part that changes *decisions*, because it **reshapes** the P-R curve, whereas
+  `b` only slides along it.
+
+**Intercept (prior) calibration — supported in-framework.**  On a held-out,
+prevalence-matched labelled sample, solve for the shift `δ` that makes the mean
+predicted probability equal the observed base rate (calibration-in-the-large),
+then set the prior to `π' = σ(logit π + δ)`:
+
+```python
+import numpy as np
+from vectorer import FellegiSunterScorer
+
+p = np.asarray(scorer.score_pairs(lefts, rights))
+pc = np.clip(p, 1e-15, 1 - 1e-15)           # exact matches hit 0/1 exactly
+x = np.log(pc / (1 - pc))                    # raw log-odds
+y = np.asarray(labels, dtype=float)
+
+def mean_p(delta):
+    return float(np.mean(1.0 / (1.0 + np.exp(-(x + delta)))))
+
+lo, hi = -60.0, 60.0                          # mean_p is monotone in delta
+for _ in range(80):
+    mid = 0.5 * (lo + hi)
+    lo, hi = (mid, hi) if mean_p(mid) < y.mean() else (lo, mid)
+delta = 0.5 * (lo + hi)
+
+pi_logit = np.log(scorer.prior) - np.log1p(-scorer.prior)
+new_prior = 1.0 / (1.0 + np.exp(-(pi_logit + delta)))
+settings = scorer.to_settings()
+settings["probability_two_random_records_match"] = float(new_prior)
+calibrated = FellegiSunterScorer.from_settings(settings, threshold=scorer.threshold)
+```
+
+This is the *labelled* counterpart of `recalibrate_prior(..., method="empirical")`
+(which calibrates the intercept from unlabelled data).  Caveat: on a
+(near-)separable sample the intercept is weakly identified — the base-rate match
+has a plateau — so use a sample with genuine score overlap, or fit `δ`/`π` by
+1-D maximum likelihood of the log loss rather than the mean match.
+
+**Slope (confidence) calibration — post-hoc.**  Fit `a, b` by one-feature
+logistic regression of `y` on `x` (Platt), or use isotonic regression / histogram
+binning for a non-parametric map (Niculescu-Mizil & Caruana find isotonic best
+with enough data, Platt best with little), and apply it by transforming the
+posteriors before thresholding: `p_cal = σ(a·x + b)`.  A slope `a ≠ 1` **cannot**
+be expressed as a change of `π` — it changes the weights' *scale* — so to stay
+inside the FS parameterisation instead, re-fit `m/u` (the discriminative route
+of §5 item 2); that is what sets the right "temperature".
+
+**What it cannot fix — ranking.**  Platt and isotonic are **monotone maps**: they
+recalibrate the probability *scale*, never the *ordering*.  When conditional
+dependence makes the additive FS score **reorder** pairs — a both-garbled
+duplicate scored below a look-alike, the interaction the additive model cannot
+express — that is a *discrimination* loss, and no monotone recalibration can
+recover it: you would get a well-calibrated probability attached to a still-wrong
+ranking (better calibration, but unchanged — or worse — discrimination: AUC and
+F1 do not improve).  The remedy is **structural** — model the dependence with a
+group comparison (§5 item 7) or add features — and calibration is only the
+*residual* scale correction afterwards.  Fix discrimination first, then
+calibrate.
+
+**Check it.**  A reliability diagram (predicted vs observed frequency per bin) is
+the test; only when `a ≈ 1` and the points sit near the diagonal is the posterior
+calibrated and `τ* = F1*/2` exact.  Fit the map on a fold disjoint from the one
+that fitted `m/u` (step 4 of the procedure, §2).  Note the tooling gap: the
+framework has no built-in post-hoc calibrator — the intercept snippet above plus
+a one-feature logistic/isotonic fit are the whole procedure.
+
+## 5. If it isn't good enough: the levers
 
 `κ` moves you along the P-R curve; it cannot move the curve itself. The
 levers that do:
@@ -232,9 +449,7 @@ Diagnose in this order: (a) candidate recall (can the true pairs even be
 scored?), (b) separability (`m/u` — is the P-R curve good at *its* best
 point, including conditional dependence? item 7), (c) operating point (`κ`).
 
----
-
-## 4. When you actually need `π` (not just `κ`)
+## 6. Estimating `π` honestly
 
 `π` is separately meaningful when you need:
 
@@ -244,7 +459,7 @@ point, including conditional dependence? item 7), (c) operating point (`κ`).
 - the **EM coupling** — if `π` is estimated jointly, it affects `m/u`.
 
 For decisions and for F1/precision/recall tuning, none of the above applies:
-use `κ`.
+use `κ` (§3).
 
 When you do need `π`, the defensible options and their standing:
 
@@ -255,78 +470,13 @@ When you do need `π`, the defensible options and their standing:
 | blocking-corrected EM | necessary because the EM prior is a *blocked* rate; divide by blocking recall |
 | dual-system / capture-recapture | needs genuinely independent captures; false positives and correlated captures bias it (Ding & Fienberg 1994) |
 | Bayesian hierarchical ER | returns a posterior *distribution* for the match rate — the honest object (Tancredi & Liseo 2011; Gutman, Afendulis & Zaslavsky 2013; Steorts, Hall & Fienberg 2016) |
-| post-hoc calibration of `p` | recalibrate the returned posterior against a labelled sample (Platt 1999; Niculescu-Mizil & Caruana 2005) |
+| post-hoc calibration of `p` | recalibrate the returned posterior against a labelled sample (Platt 1999; Niculescu-Mizil & Caruana 2005 [29]) — how-to in §4.1 |
 
 **Never publish a single `π` as ground truth.** Report an interval, and state
 the operating point as `κ` so the decision is reproducible whatever `π`
 convention you chose.
 
----
-
-## 5. Recommended workflow for best F1 / precision / recall
-
-1. **Define the objective quantitatively.** "Maximise F1", or "maximise recall
-   subject to precision ≥ 0.99", or a cost ratio. F1 weights precision and
-   recall equally; if your costs are asymmetric, use (2)/P-R-with-constraint
-   instead. Write it down before tuning.
-2. **Build a held-out labelled eval set — from the deployment decision domain.**
-   Positives from a known registry / audited sample; negatives that are *genuine*
-   non-matches.  Sample it **uniformly from the same pair domain the threshold
-   governs** and with matching class prevalence: if the scorer only ever sees
-   blocked candidates (the usual batch-ER case), sample the *candidate* pairs —
-   not the enriched training blocks, and not the full pair space (whose ≈10⁻⁷
-   match density is both the wrong prevalence and far too rare to label).  The
-   F1-optimal `κ` depends on the positive rate, so a set from a different domain
-   yields the wrong operating point unless it is **reweighted**.  Blocking
-   **recall** is a separate quantity — a candidate-domain sample cannot see the
-   pairs blocking never generated — so estimate it separately (the `recall`
-   factor) rather than by widening the eval set.  Sample **pairs uniformly**
-   within the chosen domain, not whole blocks: a block that contains no
-   positives simply contributes negatives — usually the *hard* look-alike
-   negatives that set `κ` — so dropping such blocks would bias `κ` permissive.
-   (If you must sample block-wise, weight by block size so the pooled
-   prevalence is preserved, and compute precision/recall **pooled**, never per
-   block.)  Tune and report on held-out data only.
-3. **Fit `m/u` well.** u from a large random pair sample; m from EM on
-   match-enriched blocks; supervised m/u if clerically-reviewed pairs exist.
-   **Freeze `π`** (any convention, e.g. `1e-4`) so `(π, τ)` stays on a known
-   level set.
-4. **Fit and calibrate on *disjoint* data (or cross-fit).** The optimal `κ` is a
-   function of the model, so choosing it on the pairs that fitted the weights
-   overfits the score distribution — Koyejo's two-step estimator (Alg 1) fits
-   `η̂` on one split `S1` and picks the threshold on a disjoint `S2`, which is
-   what its consistency guarantee rests on.  Weights fitted **supervised**
-   (`calibrate_from_pairs`, or the discriminative `β`-training of §3) must not
-   share labelled pairs with the `κ`-calibration set; pure EM sees no labels, so
-   that leak is absent there, but a clean split still keeps the calibration set
-   a genuine holdout.  Prefer **k-fold cross-fitting** to a single split: fit on
-   `K−1` folds, tune `κ` on the held-out fold's scores, rotate, aggregate — no
-   leakage, and all data used for both stages.
-5. **Sweep `κ`, not `τ` — or, better, read the exact curve.** With `m/u`
-   frozen, build the full P-R/F1 curve of the fixed scorer in one pass with
-   `match_weight_curve(scorer, labelled)` (§2.1): its `points` are every
-   attainable operating point, so no grid is needed. If you prefer the explicit
-   sweep, scan `κ` (the match-weight threshold) rather than `τ` over a narrow
-   high range, and include the low end — the F1 optimum is often below the
-   `τ = 0.5` point.
-6. **Pick `κ*` by the objective** (`curve.best_for("f1")`, or a
-   precision-constrained point), then derive the reported `τ* = σ(κ* +
-   logit(π))`.
-7. **Check the recall ceiling.** If precision ≈ 1 and recall stalls, revisit
-   blocking/candidate recall before touching `κ` again.
-8. **Report honestly.** Give the chosen `κ`/`τ`, the eval protocol, and — if a
-   probability scale is required — a `π` interval with its source. Cite the
-   P-R curve, not a single number, when the objective is close between
-   operating points.
-
-The framework's `fit_em(fixed_prior=...)` + threshold sweep is exactly step 5,
-and the match-weight threshold is the lever practitioner tooling exposes
-(Splink [19]); the `benchmark_lp_prior_sweep.py` capture-recapture band is a
-*bounding* input for step 8, not a substitute for step 5.
-
----
-
-## 6. Worked example (from `benchmark_lp_prior_sweep.py`)
+## 7. Worked example (from `benchmark_lp_prior_sweep.py`)
 
 On the 322k demo population the LP band put the full-file prior at
 `π ≈ 9×10⁻⁸` while the framework default is `π = 10⁻⁴`; both were scored at
@@ -375,3 +525,11 @@ availability manifest in its `README.md`.
 The empirical kappa-alias and threshold examples above come from
 `benchmarks/benchmark_lp_prior_sweep.py`; see
 [`.docs/user_guide.md`](user_guide.md) §6.3 for the runnable form.
+
+## Note on older references
+
+This guide was reorganized; earlier changelog entries use the previous section
+numbers.  Their targets are now:
+
+- **"§2.1" (the exact curve)** → **§3.1**.
+- **"§3 item 7" (conditional dependence / `group_comparison`)** → **§5 item 7**.
