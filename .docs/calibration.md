@@ -131,7 +131,7 @@ holds every attainable operating point (ordered by descending threshold, one
 per breakpoint plus the accept-nothing endpoint), so optimising is a *sort*,
 not a search — `O(n log n)` — and the best point under any of F1 / precision /
 recall is read off directly (`curve.best_for("recall")`, etc.).  This is the
-concrete form of the sweep in step 4 below, and it is what
+concrete form of the sweep in step 5 below, and it is what
 `benchmarks/benchmark_lp_prior_sweep.py --eval-mode curve` (the default) uses;
 `--eval-mode grid` keeps the older `fixed_prior × τ` sweep for comparison.
 
@@ -257,27 +257,38 @@ convention you chose.
    match-enriched blocks; supervised m/u if clerically-reviewed pairs exist.
    **Freeze `π`** (any convention, e.g. `1e-4`) so `(π, τ)` stays on a known
    level set.
-4. **Sweep `κ`, not `τ` — or, better, read the exact curve.** With `m/u`
+4. **Fit and calibrate on *disjoint* data (or cross-fit).** The optimal `κ` is a
+   function of the model, so choosing it on the pairs that fitted the weights
+   overfits the score distribution — Koyejo's two-step estimator (Alg 1) fits
+   `η̂` on one split `S1` and picks the threshold on a disjoint `S2`, which is
+   what its consistency guarantee rests on.  Weights fitted **supervised**
+   (`calibrate_from_pairs`, or the discriminative `β`-training of §3) must not
+   share labelled pairs with the `κ`-calibration set; pure EM sees no labels, so
+   that leak is absent there, but a clean split still keeps the calibration set
+   a genuine holdout.  Prefer **k-fold cross-fitting** to a single split: fit on
+   `K−1` folds, tune `κ` on the held-out fold's scores, rotate, aggregate — no
+   leakage, and all data used for both stages.
+5. **Sweep `κ`, not `τ` — or, better, read the exact curve.** With `m/u`
    frozen, build the full P-R/F1 curve of the fixed scorer in one pass with
    `match_weight_curve(scorer, labelled)` (§2.1): its `points` are every
    attainable operating point, so no grid is needed. If you prefer the explicit
    sweep, scan `κ` (the match-weight threshold) rather than `τ` over a narrow
    high range, and include the low end — the F1 optimum is often below the
    `τ = 0.5` point.
-5. **Pick `κ*` by the objective** (`curve.best_for("f1")`, or a
+6. **Pick `κ*` by the objective** (`curve.best_for("f1")`, or a
    precision-constrained point), then derive the reported `τ* = σ(κ* +
    logit(π))`.
-6. **Check the recall ceiling.** If precision ≈ 1 and recall stalls, revisit
+7. **Check the recall ceiling.** If precision ≈ 1 and recall stalls, revisit
    blocking/candidate recall before touching `κ` again.
-7. **Report honestly.** Give the chosen `κ`/`τ`, the eval protocol, and — if a
+8. **Report honestly.** Give the chosen `κ`/`τ`, the eval protocol, and — if a
    probability scale is required — a `π` interval with its source. Cite the
    P-R curve, not a single number, when the objective is close between
    operating points.
 
-The framework's `fit_em(fixed_prior=...)` + threshold sweep is exactly step 4,
+The framework's `fit_em(fixed_prior=...)` + threshold sweep is exactly step 5,
 and the match-weight threshold is the lever practitioner tooling exposes
 (Splink [19]); the `benchmark_lp_prior_sweep.py` capture-recapture band is a
-*bounding* input for step 7, not a substitute for step 4.
+*bounding* input for step 8, not a substitute for step 5.
 
 ---
 
