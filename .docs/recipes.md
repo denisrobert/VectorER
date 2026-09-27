@@ -9,6 +9,7 @@ self-contained and uses only public API.  For the underlying concepts, see
   - [The one-line version: `time_decay_wrapper`](#the-one-line-version-time_decay_wrapper)
   - [The hand-rolled version (background)](#the-hand-rolled-version-background)
 - [Recipe: importing trained parameters from Splink](#recipe-importing-trained-parameters-from-splink)
+- [Recipe: modelling conditional dependence with a group comparison](#recipe-modelling-conditional-dependence-with-a-group-comparison)
 
 ---
 
@@ -352,3 +353,82 @@ full-domain arenas are only sound for small files or high-overlap two-file
 linkage.  (3) Overlaps below ~7 matches give a wide, unreliable interval (a
 `UserWarning` is emitted).  (4) The tool estimates only the scalar base rate;
 `m/u` must still come from supervised or EM calibration.
+
+## Recipe: modelling conditional dependence with a group comparison
+
+**Goal.** Stop a conditional-independence violation from biasing the match
+weights.  FS assumes the comparisons are independent, so its score is
+**additive** (`W = Σₖ wₖ`) and cannot represent two fields that agree/disagree
+**together** — an address and its postcode corrupted by the same transcription
+error, a forename and surname from the same mis-keyed record.  The additive
+score then *under-scores* the “both-wrong” duplicates and rejects them, and no
+threshold can recover them.  A **group comparison** replaces the dependent
+fields with a single composite whose cell `m/u` are estimated **jointly**, so
+fitting learns the interaction.
+
+**Step 0 — decide the group.**  Use domain knowledge (fields that share an
+error source) or detect it: fit a composite and compare each both-disagree
+cell's weight against the sum of its marginal weights — a large residual is the
+interaction you are missing.
+
+**Step 1 — group the co-dependent comparisons.**  Build them as usual, then
+replace them with one composite:
+
+```python
+from vectorer import make_comparison, group_comparison, replace_with_group
+
+addr = make_comparison("jaro_winkler_at_thresholds", col_name="address",
+                       score_threshold_or_thresholds=[0.9, 0.8])
+pc   = make_comparison("postcode_comparison", col_name="postcode", country="UK")
+dob  = make_comparison("date_of_birth_comparison", col_name="date_of_birth")
+
+group = group_comparison("addr_pc", [addr, pc])            # full cross-product
+comparisons = replace_with_group([addr, pc, dob], group, [addr, pc])
+# -> [date_of_birth, addr_pc]  (the marginals are dropped, not kept alongside)
+```
+
+`replace_with_group` matters: keep the marginals **and** the composite and you
+double-count, and the composite becomes dependent with the leftovers.
+
+**Step 2 — coarsen if the cells thin out (optional).**  The composite has
+`∏ levels` cells (here `5 × 3 = 15`); with little data, merge cells with
+`combine` and name them:
+
+```python
+def combine(t):                     # (address_level, postcode_level) -> coarse level
+    a, p = t
+    if p == 1 and a in (1, 2, 3):   return 0    # postcode exact & address agrees
+    if a in (1, 2, 3):              return 1    # address agrees, postcode not exact
+    return 2                                     # weak
+
+group = group_comparison("addr_pc", [addr, pc], combine=combine,
+                         labels=["strong", "address-only", "weak"])
+```
+
+**Step 3 — train as usual.**  Cells are **seeded as the product of the marginal
+`m/u`** (the independence baseline), so EM (or supervised calibration)
+re-estimates them and thereby learns `δ`, the departure from independence:
+
+```python
+from vectorer import FellegiSunterScorer
+
+scorer = FellegiSunterScorer.from_comparisons(comparisons).fit_em(
+    records, training_block_on=[("postcode",)], seed=1,
+)
+```
+
+**Step 4 — confirm it helped.**  Compare the exact P-R curve / best F1 of the
+marginal comparison set against the composite on held-out labelled pairs
+(`match_weight_curve`, calibration note §2.1); the composite should recover
+recall on the “both-wrong” duplicates.
+
+**Caveats.** (1) The cell count is the product of the members’ level counts —
+coarsen the members and/or use `combine`; a guard rejects pathologically large
+cross-products.  (2) Dependence is modelled **within** the group only;
+independence is still assumed between the composite and the other comparisons
+(and between groups).  (3) Per-field `m/u` are no longer separately
+interpretable.  (4) `combine` is a Python callable, so the composite is **not
+JSON-declarable** (same caveat as `custom_comparison` test callables); it is
+built programmatically and round-trips through EM calibration in-process.  See
+[`.docs/calibration.md`](calibration.md) §3 item 7 for the underlying mechanics.
+

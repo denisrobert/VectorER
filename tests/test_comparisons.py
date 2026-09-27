@@ -40,6 +40,12 @@ REQUIRED_KWARGS = {
     "time_decayed_comparison": {
         "comparison": "exact_match", "col_name": "field", "time_col": "event_date",
     },
+    "group_comparison": {
+        "members": [
+            {"type": "exact_match", "col_name": "a"},
+            {"type": "exact_match", "col_name": "b"},
+        ],
+    },
 }
 
 
@@ -53,7 +59,7 @@ def test_catalog_matches_registry():
 
 
 def test_registered_names_cover_the_comparison_family():
-    """All 20 comparison options are available by name."""
+    """All 21 comparison options are available by name."""
     assert set(REGISTRY.names()) == {
         "absolute_date_difference_at_thresholds",
         "absolute_time_difference_at_thresholds",
@@ -67,6 +73,7 @@ def test_registered_names_cover_the_comparison_family():
         "email_comparison",
         "exact_match",
         "forename_surname_comparison",
+        "group_comparison",
         "jaccard_at_thresholds",
         "jaro_at_thresholds",
         "jaro_winkler_at_thresholds",

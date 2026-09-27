@@ -375,7 +375,7 @@ cf. FS decision rules [3][5]).
 
 ### 4.1 Comparison registry (`comparisons/`)
 
-The *function set* is extensible and covers 19 options spanning the standard
+The *function set* is extensible and covers 21 options spanning the standard
 attribute-comparison families used in record linkage [14]:
 
 - `exact_match` (with optional term-frequency adjustment [4])

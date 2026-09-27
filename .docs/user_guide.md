@@ -145,7 +145,7 @@ via `available_comparisons()`.
 ```python
 from vectorer.comparisons import make_comparison, available_comparisons
 
-print(available_comparisons())   # 19 options, name -> description
+print(available_comparisons())   # 21 options, name -> description
 
 comparisons = [
     make_comparison("jaro_winkler_at_thresholds", col_name="first_name",

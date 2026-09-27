@@ -5,7 +5,7 @@
 
 A framework for **embedding-and-vector-based entity resolution** with two
 composable pipelines and an extensible **Fellegi-Sunter** (FS) comparison set
-spanning 19 options across the standard attribute-comparison families of record
+spanning 21 options across the standard attribute-comparison families of record
 linkage — implemented **natively in NumPy, with no SQL engine and no external
 linkage dependencies**. It runs on anything from a single laptop to a
 **multi-node cluster**: the batch pipeline's expensive stages (FS scoring,
@@ -199,7 +199,7 @@ assign.node_cluster             # {record_index: cluster_id} == single-process
 Cross-shard canopies and mask-aligned parallel scoring keep the result
 identical; only the FS stage parallelizes the heavy part.
 
-## The comparison set (19 options, native)
+## The comparison set (21 options, native)
 
 `vectorer.comparisons` registers every comparison option under a canonical
 snake-case name:
@@ -299,7 +299,7 @@ vector-er/
 │   ├── vectorstores.py     # IndexingStrategy, FlatIndex (FAISS), VectorDatabase, in-memory store
 │   ├── blocking.py         # VectorBlocker (top-k) + canopy blocking (k-means multi-assignment)
 │   ├── sim.py              # vectorized similarity/distance primitives (no SQL, no fuzzy deps)
-│   ├── comparisons.py      # extensible comparison registry (19 options, native)
+│   ├── comparisons.py      # extensible comparison registry (21 options, native)
 │   ├── scoring.py          # WeightTable + FellegiSunterScorer (calibration + EM + inference)
 │   ├── classification.py   # FS decision rule (match / possible / non-match)
 │   ├── clustering.py       # Swoosh (G-Swoosh), cluster assignment helpers

@@ -164,7 +164,8 @@ levers that do:
    drops into the existing scorer, and the framework already builds the needed
    indicator matrix (`_assign_levels` inside `calibrate_from_pairs` / `fit_em`).
    Prefer it when conditionally dependent comparisons bias the generative `m/u`
-   (the §7 caveat) or when the metric itself is the training objective; it
+   (the conditional-dependence case, item 7) or when the metric itself is the
+   training objective; it
    costs you the interpretability of `m/u` and `π`, and it still needs labels.
    Crucially, the recall/precision balance is set by the training objective
    (`β`), so it shapes the fitted **weights**, not merely the threshold: a
@@ -193,10 +194,43 @@ levers that do:
    comparison so `m/u` give it an additive log-Bayes-factor (a per-block prior
    offset inside `W`); then one global `κ` is again optimal. Per-block metrics
    are diagnostic, not a basis for thresholding.
+7. **Conditional dependence — use a group comparison.** FS under independence
+   is a *main-effects-only* model of the comparison vector: `W = Σₖ wₖ`, so it
+   cannot express an **interaction** `δ(a,p)` between two fields that
+   agree/disagree together (an address and its postcode corrupted by the same
+   transcription error; a forename and surname from the same mis-keyed record).
+   The generative `m/u` is then biased, and no `κ` can recover it.  Model the
+   dependence by replacing the dependent fields with **one composite
+   comparison** whose levels are the cross-product of the members' levels, so
+   its per-level `m/u` are estimated *jointly*:
+
+   ```python
+   from vectorer import group_comparison, replace_with_group, make_comparison
+
+   addr = make_comparison("jaro_winkler_at_thresholds", col_name="address",
+                          score_threshold_or_thresholds=[0.9, 0.8])
+   pc   = make_comparison("postcode_comparison", col_name="postcode", country="UK")
+   group = group_comparison("addr_pc", [addr, pc])
+   comparisons = replace_with_group([addr, pc, ...], group, [addr, pc])
+   ```
+
+   The composite is *seeded* as the product of the members' marginal `m/u` (the
+   independence baseline), so EM (or supervised calibration) learns the
+   departure from it — i.e. it learns `δ`.  Pass `combine=(tuple_of_levels)->int`
+   to merge cells (coarsen), and `labels=[...]` to name them.  Use
+   `replace_with_group` so the marginals are **not** also included (that would
+   double-count and leave the composite dependent with the leftovers).  Caveats:
+   the cell count is the product of the members' level counts (coarsen the
+   members / use `combine` to keep cells estimable — a guard rejects huge cross-
+   products); dependence is modelled only *within* the group (independence is
+   still assumed between the composite and the other comparisons); and `m/u`
+   per field are no longer separately interpretable.  See the
+   *“modelling conditional dependence with a group comparison”* recipe in
+   [`recipes.md`](recipes.md) for the step-by-step.
 
 Diagnose in this order: (a) candidate recall (can the true pairs even be
 scored?), (b) separability (`m/u` — is the P-R curve good at *its* best
-point?), (c) operating point (`κ`).
+point, including conditional dependence? item 7), (c) operating point (`κ`).
 
 ---
 

@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`group_comparison` — composite comparisons for co-dependent fields** —
+  `vectorer.group_comparison(name, members, combine=..., labels=...)` replaces
+  two or more dependent comparisons with **one** composite whose levels are the
+  cross-product of the members' levels, so EM / supervised calibration estimates
+  the **joint** cell `m/u` — i.e. it learns the conditional-dependence
+  interaction `δ` that FS's additive (main-effects-only) score cannot express.
+  Cells are seeded as the **product of the marginal `m/u`** (the independence
+  baseline) so fitting recovers the departure from it;
+  `combine=(tuple_of_level_indices)->int` merges/coarsens cells;
+  `replace_with_group(comparisons, group, members)` swaps the marginals for the
+  composite (no double-counting).  Handles nulls (the all-missing cell is the
+  null level; partial-missing combinations are ordinary joint cells), keeps the
+  ELSE fallback last, guards against pathological cross-products, and
+  round-trips through EM calibration in-process.  Exported from
+  `vectorer.comparisons` / top-level `vectorer`; documented in the module and
+  `.docs/calibration.md` §3 (item 7).  (`combine` is a Python callable, so a
+  group comparison is not JSON-declarable — same caveat as
+  `custom_comparison` test callables.)
+
 - **`match_weight_curve` — exact fixed-scorer P/R curve (one pass, no grid)** —
   `vectorer.match_weight_curve(scorer, labelled_pairs)` (with
   `MatchWeightCurve` / `OperatingPoint`, exported from `vectorer.scoring` and

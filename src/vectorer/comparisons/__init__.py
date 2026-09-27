@@ -4,7 +4,7 @@ The comparison set spans the standard attribute-comparison families of record
 linkage, implemented **natively in NumPy with no SQL engine**: each comparison
 is a list of *levels*, and every level is a vectorized NumPy predicate
 evaluated over whole batches of pairs (see :mod:`vectorer.sim`).  The set is
-name-keyed through :class:`ComparisonRegistry` and currently covers 19
+name-keyed through :class:`ComparisonRegistry` and currently covers 21
 options.
 
 The module is a small package: shared building blocks live in ``_core.py``
@@ -61,6 +61,12 @@ from ._comparison import (
 )
 from ._custom import time_decay_wrapper, time_decayed_comparison_builder
 from ._distance_families import exact_match_spec
+from ._group import (
+    group_comparison,
+    group_comparison_builder,
+    group_comparison_spec,
+    replace_with_group,
+)
 
 __all__ = [
     "Comparison",
@@ -76,9 +82,13 @@ __all__ = [
     "comparison_from_dict",
     "comparison_set",
     "comparison_to_dict",
+    "group_comparison",
+    "group_comparison_builder",
+    "group_comparison_spec",
     "make_comparison",
     "make_comparisons",
     "register_comparison",
+    "replace_with_group",
     "time_decay_wrapper",
     "time_decayed_comparison_builder",
 ]
