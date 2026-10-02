@@ -264,11 +264,13 @@ For decisions you never need a calibrated probability — only `κ` (§3).  You 
 a genuine `p` when you want a **probability readout** ("this pair has a 0.98
 chance of being a match"), **expected counts** ("about N true matches in this
 file"), or **portability** across datasets/blocks where the pair density
-differs.  With a *well-specified* FS posterior those come for free; when the
-posterior can't be trusted, post-hoc calibration is the route to a calibrated
-`p`, and hence to the `τ* = F1*/2` shortcut above.  It means fitting a monotone
-map from the scorer's score to the observed match frequency on a labelled
-sample (Platt 1999; Niculescu-Mizil & Caruana 2005 [29]).
+differs.  A correctly specified FS posterior is calibrated under its model
+assumptions.  If held-out data shows a calibration error while the ranking is
+useful, post-hoc calibration may correct the probability scale.  Platt (1999)
+introduces sigmoid calibration for SVM scores; Niculescu-Mizil & Caruana (2005
+[29]) compare calibration methods and find logistic regression often needs no
+correction.  Neither paper establishes that FS scores have Platt-shaped
+distortion, so this is an adaptation to test, not an automatic FS step.
 
 **Precondition — when it helps, and when it hurts.**  A **correctly specified**
 FS is a logistic regression under conditional independence, and a logistic
@@ -285,16 +287,17 @@ demonstrably off.  It earns its place for a **base-rate/intercept** error
 
 ### 4.1 Post-hoc calibration in practice
 
-**What the map's two parts fix.**  Write the FS posterior `p = σ(W + logit π)`
-and a general Platt recalibration `s ↦ σ(a·logit s + b)`:
+**What the map's two parts fix.** Platt's original form maps a real-valued score
+`f` to `σ(A·f + B)`.  For an FS scorer, a natural score is its raw log-odds
+`f = logit(p) = W + logit(π)`, giving `p_cal = σ(a·logit(p) + b)`:
 
 - the **intercept `b`** is a *prior shift* — algebraically a change of `π`.  It
   is redundant for *decisions* (the `κ` threshold absorbs it), but essential for
   a **probability readout** and for `τ* = F1*/2`.
 - the **slope `a`** is a *confidence/scale* correction — `a < 1` tempers an
-  over-confident score, the usual case under conditional dependence.  It is the
-  part that changes *decisions*, because it **reshapes** the P-R curve, whereas
-  `b` only slides along it.
+  over-confident score when the calibration data supports that correction.  It
+  is the part that changes *decisions*, because it **reshapes** the P-R curve,
+  whereas `b` only slides along it.
 
 **Intercept (prior) calibration — supported in-framework.**  On a held-out,
 prevalence-matched labelled sample, solve for the shift `δ` that makes the mean

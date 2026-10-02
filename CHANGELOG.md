@@ -30,7 +30,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   can *hurt*); and monotone recalibration **cannot fix ranking** —
   dependence-induced reordering is a discrimination loss, so model the
   dependence (`group_comparison`) before recalibrating the scale.  Makes the
-  Platt / Niculescu-Mizil & Caruana [29] citation concrete.
+  Platt / Niculescu-Mizil & Caruana [29] citation concrete, and clarifies that
+  Platt's evidence concerns SVM scores; applying its sigmoid to FS posteriors
+  is an empirical calibration hypothesis, not a result established by Platt.
 
 ## [0.7.0] - 2026-09-27
 
