@@ -323,6 +323,47 @@ def test_fit_em_fixed_prior_freezes_base_rate():
     assert fixed.score(x, dict(x)) == 1.0  # idempotent ident match still holds
 
 
+def test_fit_em_fixed_prior_does_not_stop_on_fixed_pi():
+    records = []
+    for i in range(8):
+        for _ in range(2):
+            records.append({
+                "first_name": f"name{i}",
+                "last_name": "shared",
+                "date_of_birth": f"19{i:02d}-01-01",
+                "email": None,
+                "address": None,
+            })
+    scorer = FellegiSunterScorer.from_comparisons(
+        [make_comparison("jaro_winkler_at_thresholds", col_name="first_name")]
+    )
+
+    one_iteration = scorer.fit_em(
+        records,
+        training_block_on=[("last_name",)],
+        fixed_prior=0.01,
+        max_iterations=1,
+        seed=7,
+    )
+    two_iterations = scorer.fit_em(
+        records,
+        training_block_on=[("last_name",)],
+        fixed_prior=0.01,
+        max_iterations=2,
+        seed=7,
+    )
+
+    def m_probabilities(model):
+        levels = model.to_settings()["comparisons"][0]["levels"]
+        return [level["m_probability"] for level in levels if "m_probability" in level]
+
+    assert one_iteration.prior == pytest.approx(0.01)
+    assert two_iterations.prior == pytest.approx(0.01)
+    assert not np.allclose(
+        m_probabilities(one_iteration), m_probabilities(two_iterations), atol=1e-6
+    )
+
+
 def test_fit_em_fixed_prior_and_prior_disagree_raises():
     from vectorer.comparisons import make_comparison
 

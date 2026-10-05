@@ -34,6 +34,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Platt's evidence concerns SVM scores; applying its sigmoid to FS posteriors
   is an empirical calibration hypothesis, not a result established by Platt.
 
+### Fixed
+
+- **Fixed-prior EM convergence** — include changes to the match-level
+  probabilities in the convergence check when the prior is fixed, preventing
+  EM from stopping after its first iteration just because the prior did not
+  change.
+
 ## [0.7.0] - 2026-09-27
 
 ### Added

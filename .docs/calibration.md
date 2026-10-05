@@ -472,8 +472,13 @@ When you do need `π`, the defensible options and their standing:
 | labelled/audited pair sample | unbiased if the sample is random and large enough; hopeless for very rare matches at full-pair scale |
 | blocking-corrected EM | necessary because the EM prior is a *blocked* rate; divide by blocking recall |
 | dual-system / capture-recapture | needs genuinely independent captures; false positives and correlated captures bias it (Ding & Fienberg 1994) |
-| Bayesian hierarchical ER | returns a posterior *distribution* for the match rate — the honest object (Tancredi & Liseo 2011; Gutman, Afendulis & Zaslavsky 2013; Steorts, Hall & Fienberg 2016) |
+| Bayesian linkage / population-size models | propagate posterior uncertainty over links/entities; some infer population size, but are not direct estimators of the FS pair prior `π` (Tancredi & Liseo 2011; Gutman, Afendulis & Zaslavsky 2013; Steorts, Hall & Fienberg 2016) |
 | post-hoc calibration of `p` | recalibrate the returned posterior against a labelled sample (Platt 1999; Niculescu-Mizil & Caruana 2005 [29]) — how-to in §4.1 |
+
+These are alternative model classes, not drop-in estimators for this scorer's
+`π`: Tancredi & Liseo explicitly address population size; Steorts et al. infer
+posterior linkage graphs between records and latent people; Gutman et al. show
+Bayesian linkage with uncertainty propagated into downstream cost analysis.
 
 **Never publish a single `π` as ground truth.** Report an interval, and state
 the operating point as `κ` so the decision is reproducible whatever `π`

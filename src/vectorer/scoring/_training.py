@@ -192,7 +192,6 @@ class TrainingMixin:
             if prior is not None and abs(prior - fixed_prior) > 1e-12:
                 raise ValueError("prior and fixed_prior disagree; set only one")
             pi = float(fixed_prior)
-        prev_pi = None
         try:
             from tqdm import tqdm
 
@@ -251,15 +250,18 @@ class TrainingMixin:
                 m_levels = np.clip(sums / (total + 1e-12), 1e-8, None)
                 m_levels = m_levels / m_levels.sum()  # per-comparison multinomial
                 ms_new.append(m_levels.tolist())
+            # Include m changes even when pi is fixed, or the zero pi delta
+            # would make fixed-prior EM stop after its first iteration.
             change = abs(pi_new - pi)
-            if prev_pi is not None and fixed_prior is None:
-                for old, new in zip(ms, ms_new):
-                    change = max(change, float(np.max(np.abs(np.asarray(old) - np.asarray(new)))))
+            for old, new in zip(ms, ms_new):
+                change = max(
+                    change,
+                    float(np.max(np.abs(np.asarray(old) - np.asarray(new)))),
+                )
             pi = pi_new
             ms = ms_new
             if change < em_convergence:
                 break
-            prev_pi = pi
 
         # Base prior: probability two *random* records match = the model's own
         # expected match rate over a uniform (unconditional) pair sample.  We
